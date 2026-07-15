@@ -235,6 +235,9 @@ fn copy_fixture_to_tmp() -> PathBuf {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dst).unwrap();
+    // ponytail: canonicalize — macOS $TMPDIR (/var/folders/…) is a symlink to
+    // /private/var/folders/…; stored vs looked-up paths diverge → None lookups.
+    let dst = dst.canonicalize().unwrap();
     for entry in std::fs::read_dir(&src).unwrap() {
         let entry = entry.unwrap();
         std::fs::copy(entry.path(), dst.join(entry.file_name())).unwrap();
