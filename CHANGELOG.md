@@ -12,9 +12,9 @@ Initial public release of Kernava — a graph-backed, streamable-HTTP MCP coding
 - **Streamable HTTP transport** via `rmcp` (long-lived process, persistent graph) — not stdio (which kills process on disconnect)
 - **6-strategy call resolution**: ImportMap, SameFile, ModulePath, ImportMap Case B (class-qualified), SameName, Builtins
 - **Louvain community detection** on the call graph
-- **kernava.toml config file**: `max_file_size` and custom `ignore` globs, loaded from project root, defaults when absent
+- **kernava.toml config file**: `max_file_size`, custom `ignore` globs, `follow_symlinks` (default `false`), loaded from project root, defaults when absent
 - **CLI subcommands**: `serve` (MCP server), `index` (batch index), `stats` (index statistics), `query` (single tool call for scripting/debugging)
-- **File watcher**: `notify`-based with XXH3 content-hash dedup, incremental re-indexing with reverse-dependent expansion
+- **File watcher**: `notify`-based with XXH3 content-hash dedup, incremental re-indexing with reverse-dependent expansion, file deletion handling (atomic StoreTxn delete + cache sync). Wired into `serve_async` as a background `std::thread` — drain happens without the store mutex (no tool-handler stall); filter+process under a single short critical section. Cancellable via `CancellationToken`, joined on graceful shutdown.
 - **FTS5 symbol search** with cross-style tokenizer (snake_case ↔ camelCase ↔ PascalCase)
 - **Graceful shutdown**: SIGINT + SIGTERM via `tokio::select!`
 - **`.gitignore`-aware file discovery** via `ignore::WalkBuilder`
@@ -34,7 +34,7 @@ Initial public release of Kernava — a graph-backed, streamable-HTTP MCP coding
 
 ### Tests
 
-179 tests pass (20 graph + 101 indexer + 14 server + 24 store + 20 integration). Clippy clean (`-D warnings`), `cargo fmt --check` clean.
+186 tests pass (20 graph + 102 indexer + 14 server + 20 store + 30 integration). Clippy clean (`-D warnings`), `cargo fmt --check` clean.
 
 ### CI
 
@@ -48,7 +48,6 @@ MIT OR Apache-2.0 dual license.
 
 - Rust `use` paths (`crate::module::func`) don't match file-path-based qualified names in resolver — cross-file calls from `main.rs` unresolved
 - ImportMap Case B class-qualified method resolution requires singular match — ambiguous matches return unresolved
-- File deletions ignored by watcher (stale nodes persist until full re-index)
 - `index_project` is synchronous — no MCP progress notifications (deferred §6.9)
 - Session lifecycle (timeout, cache release, reconnect) not implemented (deferred §6.10)
 - Parallel indexing not implemented — indexer is sequential

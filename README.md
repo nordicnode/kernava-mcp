@@ -61,6 +61,7 @@ Kotlin is deferred (tree-sitter-kotlin requires tree-sitter <0.23, incompatible 
 | `get_communities` | Louvain community detection over symmetrized call edges |
 | `get_architecture` | Language distribution, module structure, entry points, hubs, communities |
 | `get_git_impact` | `git diff` → affected symbols → impact radius → risk classification |
+
 ## Quick Start
 
 ```bash

@@ -14,6 +14,11 @@ pub struct IndexerConfig {
     /// Additional glob patterns to ignore (beyond .gitignore).
     /// e.g. ["**/generated/**", "**/*.pb.go"]
     pub ignore: Vec<String>,
+
+    /// Whether to follow symbolic links during file discovery.
+    /// Default: false — symlinks can cause cycles and index duplicate files.
+    #[serde(default)]
+    pub follow_symlinks: bool,
 }
 
 impl Default for IndexerConfig {
@@ -21,6 +26,7 @@ impl Default for IndexerConfig {
         Self {
             max_file_size: 1_048_576, // 1 MiB
             ignore: Vec::new(),
+            follow_symlinks: false,
         }
     }
 }

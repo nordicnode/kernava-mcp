@@ -707,6 +707,16 @@ impl<'store> StoreTxn<'store> {
         Ok(())
     }
 
+    /// Delete the files row itself within the transaction.
+    /// Call after `delete_file_symbols` — FK cascades are redundant here
+    /// since `delete_file_symbols` already removed nodes/edges/import_edges,
+    /// but the files row deletion is needed to fully remove the file.
+    pub fn delete_file_row(&self, file_id: i64) -> Result<()> {
+        self.tx
+            .execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+        Ok(())
+    }
+
     /// Batch insert nodes within the transaction. Returns the list of generated ids.
     pub fn insert_nodes_batch(&self, recs: &[NodeRecord]) -> Result<Vec<i64>> {
         let mut ids = Vec::with_capacity(recs.len());

@@ -4,7 +4,8 @@ use kernava_store::Store;
 use notify::{RecursiveMode, Watcher as _};
 /// File watcher: notify-based event loop with XXH3 content-hash dedup.
 /// On content change, calls `index_incremental` for the changed file,
-/// then syncs the GraphCache.
+/// then syncs the GraphCache. On file deletion, removes the file's
+/// symbols from store + cache.
 /// ponytail: synchronous poll loop (no tokio). P3 server actor wraps this
 /// in a tokio task and owns the single-writer channel to GraphCache.
 use std::collections::HashSet;
@@ -36,20 +37,22 @@ impl Watcher {
         })
     }
 
-    /// Block until file changes are detected. Returns paths of files whose
-    /// content hash differs from the stored hash (real content changes only).
-    /// ponytail: 150ms drain window acts as debounce. Non-source files skipped.
-    /// v1: file deletions are ignored (Remove events filtered out). Stale
-    /// nodes/edges persist until a full re-index. Upgrade: handle Remove →
-    /// store.delete_file(fid) + cache.sync_delete_file(fid) (both already exist).
-    pub fn poll_changes(&self, store: &Store) -> Result<Vec<PathBuf>> {
+    /// Drain pending filesystem events into raw candidate sets (no store access).
+    /// Returns (created_or_modified, removed) Sets of source-file paths.
+    /// Blocks up to 150ms on `recv_timeout` — this is the debounce window.
+    /// Does NOT touch the store — safe to call without holding any lock.
+    pub fn drain_events(&self) -> (HashSet<PathBuf>, HashSet<PathBuf>) {
         let mut candidates: HashSet<PathBuf> = HashSet::new();
-
-        // Drain all pending events (non-blocking after initial recv)
+        let mut deleted_candidates: HashSet<PathBuf> = HashSet::new();
         while let Ok(ev) = self.rx.recv_timeout(Duration::from_millis(150)) {
             if let Ok(notify::Event { kind, paths, .. }) = ev {
-                // Only collect create/modify events, not remove
-                if matches!(
+                if matches!(kind, notify::event::EventKind::Remove(_)) {
+                    for p in &paths {
+                        if Language::from_path(p).is_some() {
+                            deleted_candidates.insert(p.clone());
+                        }
+                    }
+                } else if matches!(
                     kind,
                     notify::event::EventKind::Create(_) | notify::event::EventKind::Modify(_)
                 ) {
@@ -61,8 +64,34 @@ impl Watcher {
                 }
             }
         }
+        (candidates, deleted_candidates)
+    }
 
-        self.dedup(candidates, store)
+    /// Filter raw candidates against the store: hash-dedup for changed,
+    /// existence-check for deleted. Requires store access (short critical section).
+    /// Returns (changed, deleted) Vecs ready for `process`.
+    pub fn filter_changes(
+        &self,
+        candidates: HashSet<PathBuf>,
+        deleted_candidates: HashSet<PathBuf>,
+        store: &Store,
+    ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+        let mut deleted = Vec::new();
+        for p in deleted_candidates {
+            if store.get_file_id(&p.to_string_lossy())?.is_some() {
+                deleted.push(p);
+            }
+        }
+        let changed = self.dedup(candidates, store)?;
+        Ok((changed, deleted))
+    }
+
+    /// Block until file changes are detected. Returns (changed, deleted) paths.
+    /// Convenience method combining `drain_events` + `filter_changes`.
+    /// ponytail: 150ms drain window acts as debounce. Non-source files skipped.
+    pub fn poll_changes(&self, store: &Store) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+        let (candidates, deleted_candidates) = self.drain_events();
+        self.filter_changes(candidates, deleted_candidates, store)
     }
 
     /// Filter candidates by content hash — only files whose hash actually changed.
@@ -88,16 +117,43 @@ impl Watcher {
         Ok(changed)
     }
 
-    /// Index changed files + sync GraphCache.
+    /// Delete a file from store + cache atomically.
+    /// Ordering: get file_id → txn { delete_file_symbols (FTS5+nodes+edges)
+    /// → delete_file_row (files row) → commit } → cache.sync_delete_file.
+    /// Mirrors builder's atomic-per-file contract. No partial store state on crash.
+    /// SAFETY: caller must ensure single-writer access to Store and GraphCache
+    /// (same constraint as sync_delete_file — it takes forward+reverse locks).
+    fn delete_file(store: &mut Store, cache: &GraphCache, path: &Path) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        let file_id = match store.get_file_id(&path_str)? {
+            Some(fid) => fid,
+            None => return Ok(()), // already gone — nothing to do
+        };
+        // Atomic: FTS5 + nodes + edges + import_edges + files row in one txn
+        let txn = store.transaction()?;
+        txn.delete_file_symbols(file_id)?;
+        txn.delete_file_row(file_id)?;
+        txn.commit()?;
+        // Evict from in-RAM graph (after commit, so cache reflects committed state)
+        cache.sync_delete_file(file_id);
+        Ok(())
+    }
+
+    /// Index changed files + sync GraphCache. Delete removed files + sync cache.
     /// ponytail: caller must ensure single-writer access to Store and GraphCache.
     pub fn process(
-        &self,
         changed: Vec<PathBuf>,
+        deleted: Vec<PathBuf>,
         store: &mut Store,
         cache: &GraphCache,
         config: &IndexerConfig,
     ) -> Result<()> {
-        if changed.is_empty() {
+        // Handle deletions first (so reverse-deps re-index sees updated graph)
+        for path in &deleted {
+            Self::delete_file(store, cache, path)?;
+        }
+
+        if changed.is_empty() && deleted.is_empty() {
             return Ok(());
         }
 
@@ -228,14 +284,14 @@ mod tests {
         assert_eq!(changed.len(), 1);
 
         // Process: index_incremental + sync cache
-        watcher
-            .process(
-                changed,
-                &mut store,
-                &cache,
-                &crate::config::IndexerConfig::default(),
-            )
-            .unwrap();
+        Watcher::process(
+            changed,
+            vec![], // no deletions in this test
+            &mut store,
+            &cache,
+            &crate::config::IndexerConfig::default(),
+        )
+        .unwrap();
 
         // newfunc should be in cache
         let qname = format!("{}.newfunc", dir.join("math.ts").to_string_lossy());
@@ -262,6 +318,69 @@ mod tests {
             store_resolved,
             "cache edge count should match store resolved edge count"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_watcher_process_deletes_file() {
+        let dir = copy_fixture_to_tmp();
+        let mut store = Store::open_in_memory().unwrap();
+        crate::builder::index_full(&mut store, &dir).unwrap();
+
+        let cache = GraphCache::new();
+        cache.load_from_store(&store).unwrap();
+        let initial_nodes = cache.node_count();
+        assert!(initial_nodes > 0);
+
+        // Delete math.ts from disk
+        let math_path = dir.join("math.ts");
+        let math_qname_prefix = format!("{}.", math_path.to_string_lossy());
+        std::fs::remove_file(&math_path).unwrap();
+
+        // Process: delete math.ts from store + cache
+        Watcher::process(
+            vec![],
+            vec![math_path.clone()],
+            &mut store,
+            &cache,
+            &crate::config::IndexerConfig::default(),
+        )
+        .unwrap();
+
+        // math.ts symbols gone from store
+        assert!(
+            store
+                .get_file_id(&math_path.to_string_lossy())
+                .unwrap()
+                .is_none(),
+            "deleted file should be gone from store"
+        );
+        let remaining_nodes = store.get_all_edges().unwrap();
+        let _ = remaining_nodes; // store still functional
+
+        // math.ts symbols gone from cache
+        for entry in cache.by_qualified.iter() {
+            let qn = entry.key();
+            assert!(
+                !qn.starts_with(&math_qname_prefix),
+                "math.ts symbol should be evicted from cache: {qn}"
+            );
+        }
+        assert!(
+            cache.node_count() < initial_nodes,
+            "cache node count should decrease after deletion"
+        );
+
+        // FTS5 should not return deleted symbols — check by qualified_name prefix
+        let fts_results = kernava_store::fts5::search_symbols(store.conn(), "add", 10).unwrap();
+        for r in &fts_results {
+            assert!(
+                !r.qualified_name.starts_with(&math_qname_prefix),
+                "FTS5 should not return deleted file's symbols: {}",
+                r.qualified_name
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -225,7 +225,9 @@ pub fn index_full_with_config(
         .git_ignore(true)
         .ignore(true)
         // Native size limit — skips oversized files at walk level.
-        .max_filesize(Some(config.max_file_size as u64));
+        .max_filesize(Some(config.max_file_size as u64))
+        // Symlink following is opt-in — default false prevents cycles.
+        .follow_links(config.follow_symlinks);
     // Build custom ignore matcher from config globs.
     // ponytail: file-level filter only — doesn't prune directory descent.
     // Upgrade: write globs to a temp .ignore file and pass to add_ignore().
@@ -897,6 +899,7 @@ mod tests {
         let config = crate::config::IndexerConfig {
             max_file_size: 100,
             ignore: Vec::new(),
+            follow_symlinks: false,
         };
         let mut store = Store::open_in_memory().unwrap();
         let results = index_full_with_config(&mut store, &dir, &config).unwrap();
@@ -933,6 +936,7 @@ mod tests {
         let config = crate::config::IndexerConfig {
             max_file_size: 1_048_576,
             ignore: vec!["generated/**".to_string()],
+            follow_symlinks: false,
         };
         let mut store = Store::open_in_memory().unwrap();
         let results = index_full_with_config(&mut store, &dir, &config).unwrap();

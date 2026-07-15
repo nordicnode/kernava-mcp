@@ -4,6 +4,7 @@ pub mod handler;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use handler::{AppState, KernavaHandler};
 use kernava_graph::GraphCache;
@@ -29,6 +30,63 @@ pub fn load_config(project_root: &str) -> anyhow::Result<kernava_indexer::Indexe
         Ok(kernava_indexer::IndexerConfig::default())
     }
 }
+
+/// Spawn a background file-watcher thread that keeps store + GraphCache fresh.
+/// Uses std::thread (not spawn_blocking) — the watcher is long-lived and uses
+/// blocking mpsc + file I/O. The 150ms `recv_timeout` in `drain_events` paces
+/// the loop; cancellation is checked after each poll cycle via `ct.is_cancelled()`.
+/// SAFETY: watcher holds `state.store.lock()` only during `filter_changes` +
+/// `process` (short critical section). Event drain happens WITHOUT the lock.
+/// GraphCache writes happen under the store lock — single-writer invariant
+/// preserved (same mutex tool handlers use).
+fn spawn_watcher(
+    state: Arc<AppState>,
+    project_root: PathBuf,
+    ct: CancellationToken,
+) -> anyhow::Result<JoinHandle<()>> {
+    let watcher = kernava_indexer::watcher::Watcher::new(&project_root)?;
+    let handle = std::thread::spawn(move || {
+        loop {
+            if ct.is_cancelled() {
+                break;
+            }
+            // Drain events WITHOUT the store lock — 150ms debounce window.
+            // Idle server never touches the mutex → tool handlers never stall.
+            let (candidates, deleted_candidates) = watcher.drain_events();
+            if candidates.is_empty() && deleted_candidates.is_empty() {
+                continue;
+            }
+            // Single critical section: filter (short store reads) + process (writes).
+            // The mutex serializes with tool-handler index_project — no interleaving.
+            let mut store = match state.store.lock() {
+                Ok(g) => g,
+                Err(_) => break, // poisoned
+            };
+            let (changed, deleted) =
+                match watcher.filter_changes(candidates, deleted_candidates, &store) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("watcher filter error: {e}");
+                        continue;
+                    }
+                };
+            if !changed.is_empty() || !deleted.is_empty() {
+                if let Err(e) = kernava_indexer::watcher::Watcher::process(
+                    changed,
+                    deleted,
+                    &mut store,
+                    &state.graph,
+                    &state.config,
+                ) {
+                    tracing::warn!("watcher process error: {e}");
+                }
+            }
+        }
+        tracing::info!("Watcher thread exiting.");
+    });
+    Ok(handle)
+}
+
 /// Start the MCP server on the given port with the given DB path and project root.
 pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow::Result<()> {
     info!("Opening database at {db_path}");
@@ -56,6 +114,19 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
     });
 
     let ct = CancellationToken::new();
+
+    // Spawn file watcher thread — keeps store + GraphCache fresh on disk changes.
+    // If watcher fails to start, server runs without live file watching (non-fatal).
+    let watcher_handle = match spawn_watcher(state.clone(), state.project_root.clone(), ct.clone())
+    {
+        Ok(h) => Some(h),
+        Err(e) => {
+            tracing::warn!(
+                "File watcher failed to start: {e}. Server will run without live file watching."
+            );
+            None
+        }
+    };
     let service = StreamableHttpService::new(
         move || Ok(KernavaHandler::new(state.clone())),
         LocalSessionManager::default().into(),
@@ -97,6 +168,12 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
                 _ = terminate => info!("Received SIGTERM, shutting down..."),
             }
             ct.cancel();
+            // Wait for watcher thread to exit — it checks ct.is_cancelled()
+            // after each 150ms drain cycle. Brief blocking join is fine:
+            // server is already shutting down.
+            if let Some(h) = watcher_handle {
+                let _ = h.join();
+            }
         })
         .await?;
 

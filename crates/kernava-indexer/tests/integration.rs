@@ -1867,3 +1867,228 @@ fn test_cpp_index() {
     let graph = GraphCache::new();
     graph.load_from_store(&store).unwrap();
 }
+
+// ─── Phase 6.2 Edge Case Tests ───────────────────────────
+
+fn make_tmp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "kernava_edge_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = name; // name is just for documentation
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.canonicalize().unwrap()
+}
+
+#[test]
+fn test_edge_case_empty_project() {
+    // Zero source files — index_full should succeed with empty results
+    let dir = make_tmp_dir("empty");
+    let mut store = Store::open_in_memory().unwrap();
+    let results = kernava_indexer::builder::index_full(&mut store, &dir).unwrap();
+    assert!(
+        results.is_empty(),
+        "empty project should produce no results"
+    );
+
+    // Store should have zero files, zero nodes
+    let stats = store.stats().unwrap();
+    assert_eq!(stats.file_count, 0);
+    assert_eq!(stats.node_count, 0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_edge_case_non_source_only_project() {
+    // Project with only JSON/YAML/MD files — none are source languages
+    let dir = make_tmp_dir("non_source");
+    std::fs::write(dir.join("config.json"), "{\"key\": \"value\"}").unwrap();
+    std::fs::write(dir.join("README.md"), "# Project\n\nDescription.").unwrap();
+    std::fs::write(dir.join("docker-compose.yml"), "version: '3'").unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    let results = kernava_indexer::builder::index_full(&mut store, &dir).unwrap();
+    assert!(
+        results.is_empty(),
+        "non-source files should produce no results"
+    );
+    assert_eq!(store.stats().unwrap().file_count, 0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_edge_case_file_rename() {
+    // Index a file, rename it on disk, then re-index.
+    // Old path should be gone (if deletion handled), new path should be present.
+    // Without watcher deletion: old path persists as stale (documented v1 limitation).
+    // With our watcher fix: caller can delete old + index new.
+    let dir = make_tmp_dir("rename");
+    let old_path = dir.join("old.ts");
+    std::fs::write(
+        &old_path,
+        "export function original(): number { return 1; }\n",
+    )
+    .unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    kernava_indexer::builder::index_file(&mut store, &old_path).unwrap();
+    assert_eq!(store.stats().unwrap().file_count, 1);
+    assert!(store
+        .get_file_id(&old_path.to_string_lossy())
+        .unwrap()
+        .is_some());
+
+    // Rename on disk
+    let new_path = dir.join("new.ts");
+    std::fs::rename(&old_path, &new_path).unwrap();
+
+    // Simulate watcher: delete old path, index new path
+    use kernava_indexer::watcher::Watcher;
+    let cache = GraphCache::new();
+    cache.load_from_store(&store).unwrap();
+    Watcher::process(
+        vec![new_path.clone()],
+        vec![old_path.clone()],
+        &mut store,
+        &cache,
+        &kernava_indexer::config::IndexerConfig::default(),
+    )
+    .unwrap();
+
+    // Old path gone, new path present
+    assert!(
+        store
+            .get_file_id(&old_path.to_string_lossy())
+            .unwrap()
+            .is_none(),
+        "old path should be deleted from store"
+    );
+    assert!(
+        store
+            .get_file_id(&new_path.to_string_lossy())
+            .unwrap()
+            .is_some(),
+        "new path should be in store"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_edge_case_unicode_symbol_names() {
+    // Unicode in function and variable names (Python allows this)
+    let dir = make_tmp_dir("unicode");
+    let py_path = dir.join("unicode.py");
+    std::fs::write(
+        &py_path,
+        "# -*- coding: utf-8 -*-\ndef café():\n    return 42\n\ndef añadir(a, b):\n    return a + b\n",
+    )
+    .unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    let result = kernava_indexer::builder::index_file(&mut store, &py_path).unwrap();
+    assert!(
+        result.symbols_inserted >= 2,
+        "should extract unicode-named functions"
+    );
+
+    // Verify symbols are searchable
+    let fts = kernava_store::fts5::search_symbols(store.conn(), "café", 10).unwrap();
+    assert!(
+        fts.iter().any(|n| n.name == "café"),
+        "FTS5 should find unicode symbol: {:?}",
+        fts.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_edge_case_circular_call_chain() {
+    // A calls B, B calls A — BFS must terminate, impact radius must dedup
+    let dir = make_tmp_dir("circular");
+    let ts_path = dir.join("circular.ts");
+    std::fs::write(
+        &ts_path,
+        "export function funcA(): number { return funcB(); }\n\
+         function funcB(): number { return funcA(); }\n",
+    )
+    .unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    kernava_indexer::builder::index_file(&mut store, &ts_path).unwrap();
+
+    let cache = GraphCache::new();
+    cache.load_from_store(&store).unwrap();
+
+    // Find funcA and funcB node IDs
+    let a_qn = format!("{}.funcA", ts_path.to_string_lossy());
+    let b_qn = format!("{}.funcB", ts_path.to_string_lossy());
+    let a_id = *cache.by_qualified.get(&a_qn).unwrap();
+    let b_id = *cache.by_qualified.get(&b_qn).unwrap();
+
+    // BFS must terminate — call path from A to B is 1 hop
+    let path = get_call_path(&cache, a_id, b_id, 20).unwrap();
+    assert_eq!(path.len(), 2, "A→B should be 1 hop (2 nodes)");
+
+    // Impact radius from A: should find B (depth 1), and should NOT loop
+    // A→B→A→B... must dedup so A is not its own impact (beyond depth 0)
+    let radius = kernava_graph::get_impact_radius(&cache, a_id, 10);
+    assert!(radius.total >= 1, "at least B is impacted");
+    // Verify no duplicates — each affected symbol's node_id appears once
+    // (regression guard on BFS visited-set invariant)
+    let affected_ids: Vec<_> = radius.entries.iter().map(|e| e.node_id).collect();
+    let unique: std::collections::HashSet<_> = affected_ids.iter().collect();
+    assert_eq!(
+        affected_ids.len(),
+        unique.len(),
+        "impact radius should not contain duplicates"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_edge_case_large_file_10k_lines() {
+    // Generate a 10K-line TS file — verify index_file completes without OOM
+    // and symbol count is reasonable. Guards against pathological tree-sitter
+    // memory usage on large files.
+    let dir = make_tmp_dir("large_file");
+    let ts_path = dir.join("large.ts");
+    let mut content = String::with_capacity(200_000);
+    for i in 0..10_000 {
+        use std::fmt::Write;
+        writeln!(
+            content,
+            "export function func{i}(): number {{ return {i}; }}"
+        )
+        .unwrap();
+    }
+    std::fs::write(&ts_path, &content).unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    kernava_indexer::builder::index_file(&mut store, &ts_path)
+        .expect("index_file should handle 10K-line file without OOM");
+
+    // 10K exported functions → 10K symbols (one per function_declaration)
+    let path_str = ts_path.to_string_lossy().to_string();
+    let fid = store
+        .get_file_id(&path_str)
+        .unwrap()
+        .expect("file should be indexed");
+    let nodes = store.get_nodes_for_file(fid).unwrap();
+    // At least 10K (one per exported fn). Upper bound sanity — extraction
+    // may add nested nodes if grammar wraps export_statement around fn.
+    assert!(
+        (10_000..=15_000).contains(&nodes.len()),
+        "expected ~10K symbols for 10K-line file, got {}",
+        nodes.len()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
