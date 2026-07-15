@@ -6,6 +6,7 @@ use crate::languages::ModuleMap;
 use crate::parser::Language;
 use crate::resolver::{self, FunctionRegistry};
 use anyhow::Result;
+use tracing::warn;
 use kernava_store::{EdgeRecord, FileRecord, ImportEdgeRecord, NodeRecord, Store};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -181,8 +182,15 @@ pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFil
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("skipping directory {:?}: {e}", dir);
+                continue;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -206,10 +214,17 @@ pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFil
     files.sort();
     let import_deps = build_import_deps(&files);
     let order = topo_sort(&files, &import_deps);
-    // 3. Index in topo order. Producers' nodes are committed before consumers
+    // 3. Index in topo order. Producers' nodes are committed before consumers.
+    // Skip files that fail (binary, encoding, parse) — don't abort the whole index.
     let mut results = Vec::new();
     for p in &order {
-        results.push(index_file(store, p)?);
+        match index_file(store, p) {
+            Ok(r) => results.push(r),
+            Err(e) => {
+                warn!("skipping file {:?}: {e}", p);
+                continue;
+            }
+        }
     }
     Ok(results)
 }
@@ -727,5 +742,52 @@ mod tests {
             resolve_one_path("./math.ts", parent, std::path::Path::new("/abs/dir/main.ts")),
             "/abs/dir/math.ts"
         );
+    }
+
+    #[test]
+    fn test_index_full_skips_binary_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "kernava_binary_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Valid TS file
+        std::fs::write(dir.join("valid.ts"), "export function foo() { return 1; }").unwrap();
+        // Binary file with .ts extension (invalid UTF-8)
+        std::fs::write(dir.join("binary.ts"), b"\xff\xfe\x00\x01\x02\x03").unwrap();
+
+        let mut store = Store::open_in_memory().unwrap();
+        let results = index_full(&mut store, &dir).unwrap();
+
+        // Should index the valid file, skip the binary one
+        assert_eq!(results.len(), 1, "should index 1 file, skip binary");
+        assert_eq!(results[0].file_path, dir.join("valid.ts").to_string_lossy());
+        assert_eq!(results[0].symbols_inserted, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_index_full_empty_project() {
+        let dir = std::env::temp_dir().join(format!(
+            "kernava_empty_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut store = Store::open_in_memory().unwrap();
+        let results = index_full(&mut store, &dir).unwrap();
+        assert!(results.is_empty(), "empty project should produce zero results");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
