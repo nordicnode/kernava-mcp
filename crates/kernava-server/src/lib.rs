@@ -256,6 +256,13 @@ pub fn index_cmd(path: &str, db_path: &str) -> anyhow::Result<()> {
             let results = kernava_indexer::builder::index_full_with_config(
                 &mut store, &root, &config,
             )?;
+            // Record when this index run completed.
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = store.set_meta("indexed_at", &format!("epoch:{ts}"));
             let files = results.len();
             let symbols: usize = results.iter().map(|r| r.symbols_inserted).sum();
             let resolved: usize = results.iter().map(|r| r.calls_resolved).sum();

@@ -18,6 +18,29 @@ use rmcp::schemars;
 use rmcp::tool;
 use rmcp::tool_router;
 use serde::Deserialize;
+
+/// Deserialize an optional i32 from either a JSON integer or a numeric string.
+/// Some MCP clients send integers as strings; without this, `call_line: Option<i32>`
+/// fails with "invalid type: string \"96\", expected i32".
+fn flexible_opt_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(serde_json::Value::Number(n)) => n
+            .as_i64()
+            .map(|v| Some(v as i32))
+            .ok_or_else(|| D::Error::custom("expected integer")),
+        Some(serde_json::Value::String(s)) => s
+            .parse::<i32>()
+            .map(Some)
+            .map_err(|_| D::Error::custom(format!("expected integer, got string {s:?}"))),
+        Some(other) => Err(D::Error::custom(format!("expected integer, got {other:?}"))),
+    }
+}
 use tracing::info_span;
 
 /// Shared server state, cloned via Arc into every session.
@@ -176,7 +199,10 @@ pub struct FindDefinitionParams {
     /// Qualified name of the caller symbol that makes the call.
     pub caller_qualified_name: String,
     /// Optional line number of the call site. If omitted, returns all
-    /// outbound definitions from the caller.
+    /// outbound definitions from the caller. Accepts both integer and
+    /// numeric string (some MCP clients send integers as strings).
+    #[serde(default, deserialize_with = "flexible_opt_i32")]
+    #[schemars(with = "Option<i32>")]
     pub call_line: Option<i32>,
 }
 
@@ -241,6 +267,15 @@ impl KernavaHandler {
         let mut store = self.state.store.lock().map_err(|e| e.to_string())?;
         let results = index_full_with_config(&mut store, &root, &self.state.config)
             .map_err(|e| e.to_string())?;
+
+        // Record when this index run completed — get_index_status reports this.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = store.set_meta("indexed_at", &format!("epoch:{ts}"));
+
         self.state
             .graph
             .load_from_store(&store)
@@ -935,8 +970,19 @@ impl KernavaHandler {
         }
 
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
-        let mut lines = Vec::with_capacity(communities.len());
+        // Cap output: skip singleton communities (noise) and limit to top 50
+        // multi-member communities to prevent massive MCP response payloads.
+        const MAX_COMMUNITIES: usize = 50;
+        let mut lines = Vec::new();
+        let mut shown = 0;
         for (i, c) in communities.iter().enumerate() {
+            if c.members.len() < 2 {
+                continue;
+            }
+            if shown >= MAX_COMMUNITIES {
+                break;
+            }
+            shown += 1;
             let rep_name = store
                 .get_node(c.representative)
                 .ok()
@@ -966,11 +1012,18 @@ impl KernavaHandler {
                 member_names.join(", ")
             ));
         }
-        Ok(format!(
-            "Found {} communities:\n{}",
-            communities.len(),
-            lines.join("\n")
-        ))
+        let total = communities.len();
+        let multi = communities.iter().filter(|c| c.members.len() >= 2).count();
+        let capped = shown < multi;
+        let summary = format!(
+            "Found {total} communities (showing {shown} multi-member{}):",
+            if capped {
+                format!(", {multi} total multi-member, {total} total")
+            } else {
+                String::new()
+            }
+        );
+        Ok(format!("{summary}\n{}", lines.join("\n")))
     }
 
     /// Get project architecture summary: languages, file structure, entry points,

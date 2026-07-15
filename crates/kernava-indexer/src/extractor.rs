@@ -153,7 +153,7 @@ fn walk_one<'t>(
                     if child.kind() == "class_body" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -176,7 +176,9 @@ fn walk_one<'t>(
                                 member.kind(),
                                 "function_definition" | "decorated_definition"
                             ) {
-                                walk_method(&member, source, file_path, &qn, lang, result, work);
+                                walk_method(
+                                    &member, source, file_path, &qn, lang, result, work, false,
+                                );
                             }
                         }
                     }
@@ -215,8 +217,24 @@ fn walk_one<'t>(
             for child in node.children(&mut cursor) {
                 if child.kind() == "declaration_list" {
                     let mut body_cursor = child.walk();
+                    let mut has_attrs = false;
                     for member in child.children(&mut body_cursor) {
-                        walk_method(&member, source, file_path, &impl_qn, lang, result, work);
+                        // Track attribute_items so walk_method knows if the
+                        // method is annotated with #[tool(...)] etc.
+                        if member.kind() == "attribute_item" {
+                            has_attrs = true;
+                            continue;
+                        }
+                        if member.kind() == "function_item"
+                            || member.kind() == "function_signature_item"
+                        {
+                            walk_method(
+                                &member, source, file_path, &impl_qn, lang, result, work, has_attrs,
+                            );
+                            has_attrs = false;
+                        } else {
+                            has_attrs = false;
+                        }
                     }
                 }
             }
@@ -247,7 +265,7 @@ fn walk_one<'t>(
                     if child.kind() == "declaration_list" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -324,7 +342,7 @@ fn walk_one<'t>(
                     if child.kind() == "class_body" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -343,7 +361,7 @@ fn walk_one<'t>(
                     if child.kind() == "interface_body" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -381,7 +399,7 @@ fn walk_one<'t>(
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result, work);
+                        walk_method(&member, source, file_path, &qn, lang, result, work, false);
                     }
                 }
                 return;
@@ -396,7 +414,7 @@ fn walk_one<'t>(
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result, work);
+                        walk_method(&member, source, file_path, &qn, lang, result, work, false);
                     }
                 }
                 return;
@@ -438,7 +456,7 @@ fn walk_one<'t>(
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result, work);
+                        walk_method(&member, source, file_path, &qn, lang, result, work, false);
                     }
                 }
                 return;
@@ -452,7 +470,7 @@ fn walk_one<'t>(
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result, work);
+                        walk_method(&member, source, file_path, &qn, lang, result, work, false);
                     }
                 }
                 return;
@@ -505,7 +523,7 @@ fn walk_one<'t>(
                     if child.kind() == "declaration_list" {
                         let mut bc = child.walk();
                         for member in child.children(&mut bc) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -523,7 +541,7 @@ fn walk_one<'t>(
                     if child.kind() == "declaration_list" {
                         let mut bc = child.walk();
                         for member in child.children(&mut bc) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -609,7 +627,7 @@ fn walk_one<'t>(
                     if child.kind() == "field_declaration_list" {
                         let mut fc = child.walk();
                         for member in child.children(&mut fc) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -663,7 +681,7 @@ fn walk_one<'t>(
                     if child.kind() == "field_declaration_list" {
                         let mut fc = child.walk();
                         for member in child.children(&mut fc) {
-                            walk_method(&member, source, file_path, &qn, lang, result, work);
+                            walk_method(&member, source, file_path, &qn, lang, result, work, false);
                         }
                     }
                 }
@@ -833,13 +851,16 @@ fn walk_method<'t>(
     lang: Language,
     result: &mut ExtractionResult,
     work: &mut VecDeque<(Node<'t>, Option<String>)>,
+    has_rust_attrs: bool,
 ) {
     // Python: decorated_definition wraps function_definition — recurse into it
     if lang == Language::Python && node.kind() == "decorated_definition" {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "function_definition" {
-                walk_method(&child, source, file_path, class_qn, lang, result, work);
+                walk_method(
+                    &child, source, file_path, class_qn, lang, result, work, false,
+                );
             }
         }
         return;
@@ -915,6 +936,12 @@ fn walk_method<'t>(
             let signature = get_signature(node, source);
             let return_type = get_return_type(node, source);
 
+            // A method with attributes (e.g. #[tool(...)]) is an entry point —
+            // it's invoked by macros, not through direct call edges the
+            // indexer can capture. Treat it as exported so detect_dead_code
+            // doesn't report false positives.
+            let exported = is_exported(node, source) || has_rust_attrs;
+
             result.symbols.push(SymbolDef {
                 kind: SymbolKind::Method,
                 name,
@@ -925,7 +952,7 @@ fn walk_method<'t>(
                 signature,
                 return_type,
                 receiver_type: Some(class_qn.to_string()),
-                is_exported: is_exported(node, source),
+                is_exported: exported,
                 complexity: count_complexity(node, source),
                 decorators: Vec::new(),
             });
@@ -948,6 +975,8 @@ fn walk_method<'t>(
             let signature = get_signature(node, source);
             let return_type = get_return_type(node, source);
 
+            let exported = is_exported(node, source) || has_rust_attrs;
+
             result.symbols.push(SymbolDef {
                 kind: SymbolKind::Method,
                 name,
@@ -958,7 +987,7 @@ fn walk_method<'t>(
                 signature,
                 return_type,
                 receiver_type: Some(class_qn.to_string()),
-                is_exported: is_exported(node, source),
+                is_exported: exported,
                 complexity: 1,
                 decorators: Vec::new(),
             });
