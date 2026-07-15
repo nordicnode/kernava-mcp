@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nordicnode/kernava-mcp"
 
+[[bin]]
+name = "kernava"
+path = "src/main.rs"
+
 [dependencies]
 kernava-store = { path = "../kernava-store" }
 kernava-graph = { path = "../kernava-graph" }

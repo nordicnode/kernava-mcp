@@ -42,6 +42,63 @@ impl KernavaHandler {
     pub fn new(state: SharedState) -> Self {
         Self { state }
     }
+
+    /// Dispatch a query by tool name — for CLI `kernava query` subcommand.
+    /// Reuses the same handler logic as MCP tool calls without the rmcp layer.
+    pub fn query(&self, tool: &str, args: serde_json::Value) -> Result<String, String> {
+        match tool {
+            "search_symbols" => {
+                let params: SearchSymbolsParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.search_symbols(Parameters(params))
+            }
+            "get_symbol" => {
+                let params: GetSymbolParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_symbol(Parameters(params))
+            }
+            "get_file_outline" => {
+                let params: GetFileOutlineParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_file_outline(Parameters(params))
+            }
+            "find_references" => {
+                let params: FindReferencesParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.find_references(Parameters(params))
+            }
+            "get_callers" => {
+                let params: GraphTraversalParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_callers(Parameters(params))
+            }
+            "get_callees" => {
+                let params: GraphTraversalParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_callees(Parameters(params))
+            }
+            "search_code" => {
+                let params: SearchCodeParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.search_code(Parameters(params))
+            }
+            "find_definition" => {
+                let params: FindDefinitionParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.find_definition(Parameters(params))
+            }
+            "get_call_path" => {
+                let params: CallPathParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_call_path(Parameters(params))
+            }
+            "detect_dead_code" => self.detect_dead_code(),
+            "get_index_status" => self.get_index_status(),
+            _ => Err(format!(
+                "unknown tool: {tool}\navailable: search_symbols, get_symbol, get_file_outline, find_references, find_definition, search_code, get_callers, get_callees, get_call_path, detect_dead_code, get_index_status"
+            )),
+        }
+    }
 }
 
 /// Resolve a user-supplied relative path to the canonical absolute path

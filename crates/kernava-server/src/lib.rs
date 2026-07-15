@@ -123,3 +123,39 @@ pub fn stats_cmd(db_path: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Run a single query tool from CLI.
+pub fn query_cmd(
+    tool: &str,
+    db_path: &str,
+    project_root: &str,
+    args: &Option<String>,
+) -> anyhow::Result<()> {
+    let store = Store::open(db_path)?;
+    let graph = GraphCache::new();
+    let stats = store.stats()?;
+    if stats.node_count > 0 {
+        graph.load_from_store(&store)?;
+    }
+    let root = PathBuf::from(project_root)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(project_root));
+
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: root,
+    });
+    let handler = KernavaHandler::new(state);
+
+    let args_json: serde_json::Value = match args {
+        Some(a) => serde_json::from_str(a)?,
+        None => serde_json::json!({}),
+    };
+
+    match handler.query(tool, args_json) {
+        Ok(result) => println!("{result}"),
+        Err(e) => anyhow::bail!("{e}"),
+    }
+    Ok(())
+}

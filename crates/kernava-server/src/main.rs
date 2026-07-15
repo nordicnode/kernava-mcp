@@ -37,6 +37,18 @@ enum Commands {
         #[arg(long, default_value = "kernava.db")]
         db_path: String,
     },
+    /// Run a single query tool (for debugging/scripting)
+    Query {
+        /// Tool name: search_symbols, get_symbol, get_callers, get_callees, etc.
+        tool: String,
+        /// JSON arguments for the tool (e.g. '{"query":"add"}')
+        #[arg(long)]
+        args: Option<String>,
+        #[arg(long, default_value = "kernava.db")]
+        db_path: String,
+        #[arg(long, default_value = ".")]
+        project_root: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -54,5 +66,11 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Index { path, db_path } => lib::index_cmd(&path, &db_path),
         Commands::Stats { db_path } => lib::stats_cmd(&db_path),
+        Commands::Query {
+            tool,
+            args,
+            db_path,
+            project_root,
+        } => lib::query_cmd(&tool, &db_path, &project_root, &args),
     }
 }
