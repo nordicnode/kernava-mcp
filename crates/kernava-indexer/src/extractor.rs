@@ -188,10 +188,34 @@ fn walk_one<'t>(
         }
         // ── Rust: free functions ──
         "function_item" if lang.is_rust() => {
-            if let Some(sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
+            // Walk back through preceding attribute_item siblings to find
+            // #[test] / #[tokio::test]. Attribute chains like #[cfg(test)]
+            // \n#[test] or #[ignore]\n#[test] are valid — the immediate
+            // prev_sibling may not be #[test]. Stop at first non-attribute.
+            // Test functions are entry points (invoked by harness, not via
+            // call edges) — treat as exported, matching has_rust_attrs for
+            // impl methods (line ~943).
+            let mut has_test_attr = false;
+            let mut prev = node.prev_sibling();
+            while let Some(attr) = prev {
+                if attr.kind() != "attribute_item" {
+                    break;
+                }
+                let t = node_text(&attr, source);
+                if t.contains("#[test") || t.contains("#[tokio::test") {
+                    has_test_attr = true;
+                    break;
+                }
+                prev = attr.prev_sibling();
+            }
+            if let Some(mut sym) =
+                extract_function(node, source, file_path, parent_symbol.as_deref())
+            {
+                if has_test_attr {
+                    sym.is_exported = true;
+                }
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
-                // Walk the body (block) for calls
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "block" {
@@ -843,6 +867,7 @@ fn extract_function(
 }
 
 /// Walk a class body member, extracting methods.
+#[allow(clippy::too_many_arguments)]
 fn walk_method<'t>(
     node: &Node<'t>,
     source: &str,
@@ -2040,6 +2065,49 @@ pub fn public_fn() {}
             .find(|s| s.name == "public_fn")
             .unwrap();
         assert!(public.is_exported, "pub fn should be is_exported=true");
+    }
+
+    #[test]
+    fn test_rust_test_attribute_is_exported() {
+        // #[test] and #[tokio::test] functions are entry points — the test
+        // harness invokes them without producing call edges the indexer sees.
+        // They must be treated as exported so detect_dead_code doesn't report FPs.
+        let src = r#"
+#[test]
+fn my_test() {
+    assert!(true);
+}
+
+#[tokio::test]
+async fn async_test() {
+    assert!(true);
+}
+
+fn real_func() {}
+"#;
+        let result = extract_rust(src);
+        let test_fn = result.symbols.iter().find(|s| s.name == "my_test").unwrap();
+        assert!(test_fn.is_exported, "#[test] fn should be is_exported=true");
+
+        let async_fn = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "async_test")
+            .unwrap();
+        assert!(
+            async_fn.is_exported,
+            "#[tokio::test] fn should be is_exported=true"
+        );
+
+        let real = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "real_func")
+            .unwrap();
+        assert!(
+            !real.is_exported,
+            "non-pub fn without #[test] should be is_exported=false"
+        );
     }
 
     /// Regression: deeply-nested ASTs must not overflow the stack.

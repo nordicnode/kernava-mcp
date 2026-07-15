@@ -35,9 +35,25 @@ impl GraphCache {
         }
     }
 
+    /// Clear all cached nodes, edges, and indices.
+    /// Called before `load_from_store` to ensure idempotency on warm re-index.
+    pub fn clear(&self) {
+        self.nodes.clear();
+        self.by_name.clear();
+        self.by_qualified.clear();
+        self.forward.clear();
+        self.reverse.clear();
+        self.file_nodes.clear();
+    }
+
     /// Bulk load all nodes and edges from SQLite into DashMaps.
-    /// Called once on server startup (or after a full reindex).
+    /// Called once on server startup or after a full reindex.
+    /// Clears any prior cached state first to avoid ghost node IDs from
+    /// previous loads (SQLite auto-increment rowids change on re-index).
     pub fn load_from_store(&self, store: &Store) -> anyhow::Result<()> {
+        // Clear before loading to ensure idempotency on warm re-index.
+        self.clear();
+
         // Load all nodes
         let node_rows = store.get_all_nodes()?;
         for row in node_rows {
@@ -339,6 +355,36 @@ mod tests {
 
         assert_eq!(cache.node_count(), 3);
         assert_eq!(cache.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_load_from_store_idempotent() {
+        let store = make_store_with_data();
+        let cache = GraphCache::new();
+        cache.load_from_store(&store).unwrap();
+        assert_eq!(cache.node_count(), 3);
+        assert_eq!(cache.edge_count(), 1);
+
+        // Second load on same cache must not double — clear() runs first.
+        // Without clear(), nodes.insert overwrites (still 3) but forward/reverse
+        // and by_name/by_qualified/file_nodes append → edge_count would be 2.
+        cache.load_from_store(&store).unwrap();
+        assert_eq!(cache.node_count(), 3, "node_count doubled without clear()");
+        assert_eq!(cache.edge_count(), 1, "edge_count doubled without clear()");
+
+        // by_qualified must not have stale entries
+        let foo_id = *cache.by_qualified.get("src/main.foo").unwrap();
+        let bar_id = *cache.by_qualified.get("src/main.bar").unwrap();
+        assert_eq!(
+            cache.get_callees(foo_id).len(),
+            1,
+            "forward adjacency doubled"
+        );
+        assert_eq!(
+            cache.get_callers(bar_id).len(),
+            1,
+            "reverse adjacency doubled"
+        );
     }
 
     #[test]

@@ -116,10 +116,27 @@ impl KernavaHandler {
                     .map_err(|e| e.to_string())?;
                 self.get_call_path(Parameters(params))
             }
+            "get_impact_radius" => {
+                let params: GraphTraversalParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_impact_radius_tool(Parameters(params))
+            }
             "detect_dead_code" => self.detect_dead_code(),
             "get_index_status" => self.get_index_status(),
+            "index_project" => {
+                let params: IndexProjectParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.index_project(Parameters(params))
+            }
+            "get_communities" => self.get_communities(),
+            "get_architecture" => self.get_architecture(),
+            "get_git_impact" => {
+                let params: GitImpactParams = serde_json::from_value(args)
+                    .map_err(|e| e.to_string())?;
+                self.get_git_impact(Parameters(params))
+            }
             _ => Err(format!(
-                "unknown tool: {tool}\navailable: search_symbols, get_symbol, get_file_outline, find_references, find_definition, search_code, get_callers, get_callees, get_call_path, detect_dead_code, get_index_status"
+                "unknown tool: {tool}\navailable: index_project, get_index_status, search_symbols, get_symbol, get_file_outline, find_references, find_definition, search_code, get_callers, get_callees, get_call_path, get_impact_radius, detect_dead_code, get_communities, get_architecture, get_git_impact"
             )),
         }
     }
