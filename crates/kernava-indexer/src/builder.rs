@@ -238,14 +238,21 @@ fn build_import_deps(files: &[PathBuf]) -> HashMap<PathBuf, Vec<PathBuf>> {
     for p in files {
         let source = match std::fs::read_to_string(p) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(_) => {
+                deps.insert(p.clone(), Vec::new());
+                continue;
+            }
         };
         let Some(lang) = Language::from_path(p) else {
+            deps.insert(p.clone(), Vec::new());
             continue;
         };
         let mut extraction = match extractor::extract(&source, lang, &p.to_string_lossy()) {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(_) => {
+                deps.insert(p.clone(), Vec::new());
+                continue;
+            }
         };
         resolve_module_paths(&mut extraction.module_map, p);
         let file_deps: Vec<PathBuf> = extraction
