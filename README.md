@@ -61,20 +61,65 @@ Kotlin is deferred (tree-sitter-kotlin requires tree-sitter <0.23, incompatible 
 | `get_communities` | Louvain community detection over symmetrized call edges |
 | `get_architecture` | Language distribution, module structure, entry points, hubs, communities |
 | `get_git_impact` | `git diff` → affected symbols → impact radius → risk classification |
-
 ## Quick Start
 
 ```bash
 # Build
 cargo build --release
 
-# Run (indexes the current directory, serves MCP over streamable HTTP)
-./target/release/kernava-server --port 8080 /path/to/your/project
+# Start the MCP server (indexes your project, listens on port 8080)
+./target/release/kernava serve --port 8080 --project-root /path/to/your/project
 
-# Connect from any MCP client (Claude Desktop, etc.)
-# Endpoint: http://localhost:8080/mcp
+# Or index from CLI without running the server
+./target/release/kernava index --path /path/to/your/project
+./target/release/kernava stats  # show index statistics
 ```
 
+Then configure your MCP client (below) to connect to `http://localhost:8080/mcp`.
+
+## MCP Client Configuration
+
+### Claude Code
+
+```json
+{
+  "mcpServers": {
+    "kernava": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+### Cursor
+
+```json
+{
+  "mcpServers": {
+    "kernava": {
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+### Zed
+
+```json
+{
+  "context_servers": {
+    "kernava": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {}
+    }
+  }
+}
+```
+
+### Generic MCP Client
+
+Endpoint: `http://localhost:8080/mcp` (streamable HTTP, POST).
 ## Workspace Layout
 
 ```

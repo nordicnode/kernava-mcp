@@ -18,6 +18,7 @@ use rmcp::schemars;
 use rmcp::tool;
 use rmcp::tool_router;
 use serde::Deserialize;
+use tracing::info_span;
 
 /// Shared server state, cloned via Arc into every session.
 // ponytail: Mutex<Store> serializes all DB access. Upgrade path: connection pool
@@ -177,6 +178,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<IndexProjectParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "index_project").entered();
         let root = PathBuf::from(&params.project_root);
         let mut store = self.state.store.lock().map_err(|e| e.to_string())?;
         let results = index_full(&mut store, &root).map_err(|e| e.to_string())?;
@@ -202,6 +204,7 @@ impl KernavaHandler {
         description = "Get current index statistics: file count, symbol count, edge count, resolved calls, and language distribution."
     )]
     fn get_index_status(&self) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_index_status").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let stats = store.stats().map_err(|e| e.to_string())?;
         let langs = stats
@@ -234,6 +237,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<SearchSymbolsParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "search_symbols").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let nodes =
             kernava_store::fts5::search_symbols(store.conn(), &params.query, params.limit as i64)
@@ -261,6 +265,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<GetSymbolParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_symbol").entered();
         let qname = resolve_qname(&self.state, &params.qualified_name);
         let node = self
             .state
@@ -307,6 +312,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<GetFileOutlineParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_file_outline").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let abs_path = resolve_path(&self.state, &params.file_path);
         let file_id = store.get_file_id(&abs_path).map_err(|e| e.to_string())?;
@@ -336,6 +342,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<FindReferencesParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "find_references").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let qname = resolve_qname(&self.state, &params.qualified_name);
 
@@ -399,6 +406,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<FindDefinitionParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "find_definition").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let qname = resolve_qname(&self.state, &params.caller_qualified_name);
 
@@ -481,6 +489,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<SearchCodeParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "search_code").entered();
         let re = regex::Regex::new(&params.pattern).map_err(|e| e.to_string())?;
 
         // Phase 1: fetch file list under lock, then drop lock for disk I/O
@@ -573,6 +582,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<GraphTraversalParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_callers").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let qname = resolve_qname(&self.state, &params.source);
         let node = self
@@ -626,6 +636,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<GraphTraversalParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_callees").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let qname = resolve_qname(&self.state, &params.source);
         let node = self
@@ -684,6 +695,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<CallPathParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_call_path").entered();
         let src_qname = resolve_qname(&self.state, &params.source);
         let tgt_qname = resolve_qname(&self.state, &params.target);
 
@@ -745,6 +757,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<GraphTraversalParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_impact_radius_tool").entered();
         let qname = resolve_qname(&self.state, &params.source);
         let node = self
             .state
@@ -797,6 +810,7 @@ impl KernavaHandler {
         description = "Detect dead code: functions with zero incoming call edges, excluding exported symbols and known entry points (main, test functions)."
     )]
     fn detect_dead_code(&self) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "detect_dead_code").entered();
         // Use the in-RAM graph cache instead of SQL round-trips.
         // A node is "called" if it appears as a key in the reverse adjacency map.
         // ponytail: this misses non-calls edges (references), but detect_dead_code
@@ -854,6 +868,7 @@ impl KernavaHandler {
         description = "Detect communities in the call graph using Louvain modularity optimization over symmetrized call edges. Returns communities sorted by size with member symbols, representative (most-connected), internal/external edge weights."
     )]
     fn get_communities(&self) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_communities").entered();
         let communities = detect_communities(&self.state.graph);
 
         if communities.is_empty() {
@@ -906,6 +921,7 @@ impl KernavaHandler {
         description = "Get project architecture summary: language distribution, module structure (files grouped by top-level directory), entry points (exported symbols + main), hub functions (top 10 by incoming call count), and detected communities."
     )]
     fn get_architecture(&self) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_architecture").entered();
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let stats = store.stats().map_err(|e| e.to_string())?;
 
@@ -998,6 +1014,7 @@ impl KernavaHandler {
         &self,
         Parameters(params): Parameters<GitImpactParams>,
     ) -> Result<String, String> {
+        let _span = info_span!("mcp_tool", name = "get_git_impact").entered();
         // 1. Run git diff --name-only to get changed files
         let mut cmd = std::process::Command::new("git");
         cmd.arg("diff").arg("--name-only").arg("--no-color");

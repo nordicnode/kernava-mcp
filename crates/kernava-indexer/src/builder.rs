@@ -179,35 +179,19 @@ pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFil
     // the absolute paths resolve_module_paths produces off file.parent().
     let root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("skipping directory {:?}: {e}", dir);
-                continue;
-            }
-        };
-        for entry in entries {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            if name_str.starts_with('.')
-                || matches!(
-                    name_str.as_ref(),
-                    "node_modules" | "target" | "dist" | "build" | "vendor"
-                )
-            {
-                continue;
-            }
-
-            if path.is_dir() {
-                stack.push(path);
-            } else if Language::from_path(&path).is_some() {
-                files.push(path);
-            }
+    // Use ignore crate for .gitignore-aware file discovery.
+    // Replaces hand-rolled skip list (.git, node_modules, target, etc.)
+    // with proper gitignore + .ignore file support.
+    for entry in ignore::WalkBuilder::new(&root)
+        .hidden(true)
+        .git_ignore(true)
+        .ignore(true)
+        .build()
+    {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.is_file() && Language::from_path(path).is_some() {
+            files.push(path.to_path_buf());
         }
     }
     files.sort();

@@ -59,12 +59,31 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c().await.ok();
-            info!("Shutting down...");
+            // Handle both SIGINT (Ctrl+C) and SIGTERM (Docker/systemd)
+            let ctrl_c = tokio::signal::ctrl_c();
+
+            #[cfg(unix)]
+            let terminate = async {
+                use tokio::signal::unix::{signal, SignalKind};
+                if let Ok(mut s) = signal(SignalKind::terminate()) {
+                    s.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<()>();
+
+            tokio::select! {
+                _ = ctrl_c => info!("Received SIGINT, shutting down..."),
+                _ = terminate => info!("Received SIGTERM, shutting down..."),
+            }
             ct.cancel();
         })
         .await?;
 
+    info!("Shutdown complete.");
     Ok(())
 }
 
