@@ -2115,19 +2115,23 @@ fn test_rust_path_qualified_call_resolution() {
     // Verify the edge: main -> add exists (from math::add call)
     let main_qn = format!("{}/main.rs.main", dir.to_string_lossy());
     let add_qn = format!("{}/math.rs.add", dir.to_string_lossy());
-    let main_node = store.get_all_nodes().unwrap()
+    let main_node = store
+        .get_all_nodes()
+        .unwrap()
         .into_iter()
         .find(|n| n.qualified_name == main_qn)
         .expect("main should be indexed");
-    let add_node = store.get_all_nodes().unwrap()
+    let add_node = store
+        .get_all_nodes()
+        .unwrap()
         .into_iter()
         .find(|n| n.qualified_name == add_qn)
         .expect("add should be indexed");
 
     let outgoing = store.get_outgoing_edges(main_node.id).unwrap();
-    let has_edge = outgoing.iter().any(|e| {
-        e.edge_type == "calls" && e.target_id == Some(add_node.id)
-    });
+    let has_edge = outgoing
+        .iter()
+        .any(|e| e.edge_type == "calls" && e.target_id == Some(add_node.id));
     assert!(
         has_edge,
         "main should have a call edge to add (from math::add(10, 20))"

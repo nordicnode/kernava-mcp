@@ -535,7 +535,10 @@ mod tests {
     #[test]
     fn test_split_callee_rust_path() {
         assert_eq!(split_callee("module::func"), (Some("module"), "func", true));
-        assert_eq!(split_callee("crate::module::func"), (Some("crate::module"), "func", true));
+        assert_eq!(
+            split_callee("crate::module::func"),
+            (Some("crate::module"), "func", true)
+        );
         // :: takes precedence over .
         assert_eq!(split_callee("a::b.c"), (Some("a"), "b.c", true));
     }

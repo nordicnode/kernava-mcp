@@ -370,9 +370,8 @@ impl KernavaHandler {
             return Ok("Query is empty. Provide a symbol name or fragment to search.".into());
         }
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
-        let nodes =
-            kernava_store::fts5::search_symbols(store.conn(), query, params.limit as i64)
-                .map_err(|e| e.to_string())?;
+        let nodes = kernava_store::fts5::search_symbols(store.conn(), query, params.limit as i64)
+            .map_err(|e| e.to_string())?;
         if nodes.is_empty() {
             return Ok("No symbols found.".into());
         }
@@ -740,7 +739,11 @@ impl KernavaHandler {
             None => return Ok(format!("Symbol '{}' not found.", params.source)),
         };
 
-        let max_depth = if params.max_depth == 0 { 1 } else { params.max_depth as usize };
+        let max_depth = if params.max_depth == 0 {
+            1
+        } else {
+            params.max_depth as usize
+        };
 
         // BFS over reverse adjacency in the graph cache.
         use std::collections::HashSet;
@@ -798,10 +801,7 @@ impl KernavaHandler {
                 .unwrap_or_else(|| format!("node#{caller_id}"));
             if *depth == 1 {
                 // Direct caller — use pre-built edge map for file/line.
-                let (file, line) = edge_map
-                    .get(caller_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let (file, line) = edge_map.get(caller_id).cloned().unwrap_or_default();
                 lines.push(format!(
                     "  {caller_name} → {qname} at {file}:{line} (confidence {:.2})",
                     conf
@@ -843,7 +843,11 @@ impl KernavaHandler {
             None => return Ok(format!("Symbol '{}' not found.", params.source)),
         };
 
-        let max_depth = if params.max_depth == 0 { 1 } else { params.max_depth as usize };
+        let max_depth = if params.max_depth == 0 {
+            1
+        } else {
+            params.max_depth as usize
+        };
 
         // BFS over forward adjacency in the graph cache.
         use std::collections::HashSet;
@@ -898,10 +902,7 @@ impl KernavaHandler {
             };
             if *depth == 1 {
                 // Direct callee — use pre-built edge map for file/line.
-                let (file, line) = edge_map
-                    .get(callee_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let (file, line) = edge_map.get(callee_id).cloned().unwrap_or_default();
                 lines.push(format!(
                     "  {qname} → {callee_name} at {file}:{line} (confidence {:.2})",
                     conf
@@ -1003,7 +1004,11 @@ impl KernavaHandler {
             None => return Ok(format!("Symbol '{}' not found.", params.source)),
         };
 
-        let depth = if params.max_depth == 0 { 10 } else { params.max_depth as usize };
+        let depth = if params.max_depth == 0 {
+            10
+        } else {
+            params.max_depth as usize
+        };
         let radius = get_impact_radius(&self.state.graph, node.id, depth);
 
         if radius.total == 0 {
@@ -1254,7 +1259,11 @@ impl KernavaHandler {
         } else {
             let multi = communities.iter().filter(|c| c.members.len() >= 2).count();
             let singletons = communities.len() - multi;
-            let largest = communities.iter().map(|c| c.members.len()).max().unwrap_or(0);
+            let largest = communities
+                .iter()
+                .map(|c| c.members.len())
+                .max()
+                .unwrap_or(0);
             format!(
                 "  {} communities ({} multi-member, {} singletons, largest: {} members)",
                 communities.len(),
