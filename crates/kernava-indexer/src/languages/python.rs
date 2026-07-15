@@ -97,7 +97,8 @@ fn parse_import_from(node: &Node, source: &str, map: &mut ModuleMap) {
 }
 
 /// Extract the module path from an import_from_statement.
-/// Handles relative imports: `from .mod import x` → "./mod", `from . import x` → ".".
+/// Handles relative imports: `from .mod import x` → "./mod", `from . import x` → ".",
+/// `from ..mod import x` → "../mod/", `from ...mod import x` → "../../mod/".
 fn get_module_path(node: &Node, source: &str) -> String {
     let mut module_path = String::new();
     let mut relative_dots = 0;
@@ -106,7 +107,7 @@ fn get_module_path(node: &Node, source: &str) -> String {
     if let Some(mod_node) = node.child_by_field_name("module_name") {
         if mod_node.kind() == "relative_import" {
             let text = node_text(&mod_node, source);
-            relative_dots = text.matches('.').count();
+            relative_dots = text.chars().take_while(|c| *c == '.').count();
             // relative_import may contain an embedded dotted_name for `from .mod import`
             // Check children for dotted_name
             let mut cursor = mod_node.walk();
@@ -120,13 +121,23 @@ fn get_module_path(node: &Node, source: &str) -> String {
         }
     }
 
-    // ponytail: only handles 1-dot relative imports (from .mod). Multi-dot (from ..mod)
-    // produces ./mod instead of ../mod. Fix when a fixture needs parent-package imports.
+    // N dots → N-1 parent traversals: . = current (0 parents), .. = 1 parent, ... = 2 parents
+    // Dotted module paths (pkg.mod) become path segments (pkg/mod) for file resolution.
+    // No trailing slash — resolve_one_path uses Path::join + with_extension which breaks
+    // on paths with trailing slash (produces dir/.ext instead of dir/file.ext).
     if relative_dots > 0 {
+        let path_segments = module_path.replace('.', "/");
         if module_path.is_empty() {
-            ".".to_string()
+            // No module after dots: . = current dir, .. = parent dir, ... = grandparent
+            if relative_dots == 1 {
+                ".".to_string()
+            } else {
+                "..".repeat(relative_dots - 1)
+            }
+        } else if relative_dots == 1 {
+            format!("./{}", path_segments)
         } else {
-            format!("./{}", module_path)
+            format!("{}{}", "../".repeat(relative_dots - 1), path_segments)
         }
     } else {
         module_path
@@ -192,9 +203,33 @@ mod tests {
     }
 
     #[test]
+    fn test_from_relative_multi_segment_import() {
+        let map = extract_py_imports("from .pkg.mod import helper");
+        assert_eq!(map.imports.get("helper"), Some(&"./pkg/mod".to_string()));
+    }
+
+    #[test]
     fn test_from_relative_dot_import() {
         let map = extract_py_imports("from . import helper");
         assert_eq!(map.imports.get("helper"), Some(&".".to_string()));
+    }
+
+    #[test]
+    fn test_from_relative_two_dot_import() {
+        let map = extract_py_imports("from ..mod import helper");
+        assert_eq!(map.imports.get("helper"), Some(&"../mod".to_string()));
+    }
+
+    #[test]
+    fn test_from_relative_three_dot_import() {
+        let map = extract_py_imports("from ...pkg.mod import helper");
+        assert_eq!(map.imports.get("helper"), Some(&"../../pkg/mod".to_string()));
+    }
+
+    #[test]
+    fn test_from_relative_two_dot_no_module() {
+        let map = extract_py_imports("from .. import helper");
+        assert_eq!(map.imports.get("helper"), Some(&"..".to_string()));
     }
 
     #[test]

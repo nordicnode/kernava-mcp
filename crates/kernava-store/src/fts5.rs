@@ -264,4 +264,52 @@ mod tests {
         assert_eq!(results.len(), 1, "should find handleRequest via FTS5 MATCH");
         assert_eq!(results[0].name, "handleRequest");
     }
+
+    #[test]
+    fn test_search_symbols_cross_style_match() {
+        use crate::{NodeRecord, Store};
+
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .upsert_file(&crate::FileRecord {
+                path: "api.ts".into(),
+                language: "typescript".into(),
+                content_hash: vec![0; 16],
+                mtime: 0,
+                size: 42,
+            })
+            .unwrap();
+        let file_id = store.get_file_id("api.ts").unwrap().unwrap();
+
+        let txn = store.transaction().unwrap();
+        // Insert camelCase symbol
+        txn.insert_nodes_batch(&[NodeRecord {
+            kind: "function".into(),
+            name: "handleRequest".into(),
+            qualified_name: "api.ts.handleRequest".into(),
+            file_id,
+            line_start: 1,
+            line_end: 5,
+            col_start: Some(0),
+            signature: None,
+            return_type: None,
+            receiver_type: None,
+            is_exported: true,
+            complexity: 1,
+            decorators: None,
+            metadata: None,
+        }])
+        .unwrap();
+        txn.commit().unwrap();
+
+        // Query with snake_case should match camelCase symbol
+        let results = search_symbols(store.conn(), "handle_request", 10).unwrap();
+        assert_eq!(results.len(), 1, "snake_case query should match camelCase symbol");
+        assert_eq!(results[0].name, "handleRequest");
+
+        // Query with camelCase should also match
+        let results = search_symbols(store.conn(), "handleRequest", 10).unwrap();
+        assert_eq!(results.len(), 1, "camelCase query should match camelCase symbol");
+        assert_eq!(results[0].name, "handleRequest");
+    }
 }

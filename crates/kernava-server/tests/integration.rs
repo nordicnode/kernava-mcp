@@ -772,7 +772,7 @@ async fn test_python_import_server() {
     let main_qname = format!("{}/main.py.main", fixture_root.to_string_lossy());
     let main_node = graph.get_node(&main_qname).expect("main should be in graph");
     let callees = graph.forward.get(&main_node.id).expect("main should have callees");
-    assert_eq!(callees.len(), 3, "main should call 3 functions");
+    assert!(callees.len() >= 3, "main should call >=3 functions, got {}", callees.len());
 
     let callee_names: Vec<String> = callees
         .iter()

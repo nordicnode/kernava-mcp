@@ -197,16 +197,78 @@ fn try_import_map(
     }
 
     // Case B: Member access on imported name — "utils.foo" where "utils" is namespace import
+    // Also handles "pkg.Calculator.compute" where first segment "pkg" is the import alias
+    // and "Calculator.compute" is the member path — tries direct then class-qualified.
     if let Some(pfx) = prefix {
-        if let Some(module_path) = module_map.imports.get(pfx) {
-            let target_qn = format!("{}.{}", module_path, suffix);
-            if registry.find_qualified(&target_qn).is_some() {
-                return Some(ResolvedCall {
-                    callee: full_callee.to_string(),
-                    target_qualified: Some(target_qn),
-                    confidence: ResolutionStrategy::ImportMap.confidence(),
-                    strategy: ResolutionStrategy::ImportMap,
-                });
+        // Try the full prefix first (e.g., "utils" in "utils.foo")
+        // Then try the first segment (e.g., "calc" in "calc.Calculator.compute")
+        let prefixes: Vec<&str> = if pfx.contains('.') {
+            vec![pfx, pfx.split('.').next().unwrap_or(pfx)]
+        } else {
+            vec![pfx]
+        };
+
+        for &try_pfx in &prefixes {
+            if let Some(module_path) = module_map.imports.get(try_pfx) {
+                // Direct match: module_path.suffix
+                let target_qn = format!("{}.{}", module_path, suffix);
+                if registry.find_qualified(&target_qn).is_some() {
+                    return Some(ResolvedCall {
+                        callee: full_callee.to_string(),
+                        target_qualified: Some(target_qn),
+                        confidence: ResolutionStrategy::ImportMap.confidence(),
+                        strategy: ResolutionStrategy::ImportMap,
+                    });
+                }
+
+                // Qualified direct match: when using first segment as import alias,
+                // try module_path.{rest_of_prefix}.{suffix}
+                // e.g., "calc.A.compute" → calc→"src/calc", rest="A" → "src/calc.A.compute"
+                if try_pfx != pfx {
+                    let rest = &pfx[try_pfx.len()..];
+                    let rest_trimmed = rest.strip_prefix('.').unwrap_or(rest);
+                    let qualified_target = format!("{}.{}.{}", module_path, rest_trimmed, suffix);
+                    if registry.find_qualified(&qualified_target).is_some() {
+                        return Some(ResolvedCall {
+                            callee: full_callee.to_string(),
+                            target_qualified: Some(qualified_target),
+                            confidence: ResolutionStrategy::ImportMap.confidence(),
+                            strategy: ResolutionStrategy::ImportMap,
+                        });
+                    }
+                }
+                // Class-qualified match: module_path.ClassName.suffix
+                // Scans registry for symbols whose qualified_name starts with
+                // "module_path." and ends with ".suffix". Resolves calls like
+                // pkg.Calculator.compute() where import maps "pkg" to a module.
+                // Returns only if exactly one match — avoids picking arbitrarily on ambiguity.
+                // ponytail: linear scan of by_qualified per Case B miss — add secondary index
+                // by simple_name when project exceeds 10K files to avoid O(n) per call site.
+                let prefix_str = format!("{}.", module_path);
+                let suffix_str = format!(".{}", suffix);
+                let mut found: Option<String> = None;
+                let mut count = 0;
+                for (qn, _) in &registry.by_qualified {
+                    if qn.starts_with(&prefix_str) && qn.ends_with(&suffix_str) {
+                        found = Some(qn.clone());
+                        count += 1;
+                        // ponytail: HashMap order non-deterministic, so multi-match
+                        // (pkg.A.helper + pkg.B.helper) returns None to avoid flapping.
+                        if count > 1 {
+                            break;
+                        }
+                    }
+                }
+                if count == 1 {
+                    if let Some(qn) = found {
+                        return Some(ResolvedCall {
+                            callee: full_callee.to_string(),
+                            target_qualified: Some(qn),
+                            confidence: ResolutionStrategy::ImportMap.confidence() * 0.9,
+                            strategy: ResolutionStrategy::ImportMap,
+                        });
+                    }
+                }
             }
         }
     }
@@ -431,6 +493,111 @@ mod tests {
         assert_eq!(split_callee("foo"), (None, "foo"));
         assert_eq!(split_callee("obj.method"), (Some("obj"), "method"));
         assert_eq!(split_callee("a.b.c"), (Some("a.b"), "c"));
+    }
+
+    #[test]
+    fn test_import_map_class_qualified_method() {
+        // "calc.Calculator.compute" where "calc" maps to "src/calc"
+        // Direct lookup "src/calc.Calculator.compute" should hit Case B class-qualified fallback.
+        let mut reg = make_registry();
+        reg.register(SymbolDef {
+            kind: SymbolKind::Method,
+            name: "compute".into(),
+            qualified_name: "src/calc.Calculator.compute".into(),
+            file_path: "src/calc".into(),
+            line_start: 5,
+            line_end: 10,
+            signature: None,
+            return_type: None,
+            receiver_type: Some("src/calc.Calculator".into()),
+            is_exported: true,
+            complexity: 2,
+            decorators: vec![],
+        });
+        let mut map = ModuleMap::default();
+        map.imports.insert("calc".into(), "src/calc".into());
+
+        let call = CallSite {
+            callee: "calc.Calculator.compute".into(),
+            line: 3,
+            caller_qualified: Some("src/main.main".into()),
+            col: 10,
+        };
+        let resolved = resolve_one(&call, &reg, &map, "src/main");
+        assert_eq!(resolved.strategy, ResolutionStrategy::ImportMap);
+        assert_eq!(
+            resolved.target_qualified.as_deref(),
+            Some("src/calc.Calculator.compute")
+        );
+        // Resolved via qualified direct match at full ImportMap confidence (0.95)
+        assert!((resolved.confidence - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_import_map_class_qualified_ambiguous() {
+        // Two methods named "compute" in different classes, no direct match → ambiguous
+        let mut reg = FunctionRegistry::new();
+        reg.register(SymbolDef {
+            kind: SymbolKind::Method,
+            name: "compute".into(),
+            qualified_name: "src/calc.A.compute".into(),
+            file_path: "src/calc".into(),
+            line_start: 5,
+            line_end: 10,
+            signature: None,
+            return_type: None,
+            receiver_type: Some("src/calc.A".into()),
+            is_exported: true,
+            complexity: 1,
+            decorators: vec![],
+        });
+        reg.register(SymbolDef {
+            kind: SymbolKind::Method,
+            name: "compute".into(),
+            qualified_name: "src/calc.B.compute".into(),
+            file_path: "src/calc".into(),
+            line_start: 15,
+            line_end: 20,
+            signature: None,
+            return_type: None,
+            receiver_type: Some("src/calc.B".into()),
+            is_exported: true,
+            complexity: 1,
+            decorators: vec![],
+        });
+        let mut map = ModuleMap::default();
+        map.imports.insert("calc".into(), "src/calc".into());
+
+        let call = CallSite {
+            callee: "calc.A.compute".into(),
+            line: 3,
+            caller_qualified: Some("src/main.main".into()),
+            col: 10,
+        };
+        let resolved = resolve_one(&call, &reg, &map, "src/main");
+        // Direct lookup "src/calc.A.compute" hits, no ambiguity — singular match
+        assert_eq!(
+            resolved.target_qualified.as_deref(),
+            Some("src/calc.A.compute")
+        );
+
+        // Now test actual ambiguity: callee "calc.compute" matches both A.compute and B.compute
+        let call2 = CallSite {
+            callee: "calc.compute".into(),
+            line: 3,
+            caller_qualified: Some("src/main.main".into()),
+            col: 10,
+        };
+        let resolved2 = resolve_one(&call2, &reg, &map, "src/main");
+        // Ambiguous (2 matches) → class-qualified returns None, falls through
+        assert_ne!(
+            resolved2.target_qualified,
+            Some("src/calc.A.compute".to_string())
+        );
+        assert_ne!(
+            resolved2.target_qualified,
+            Some("src/calc.B.compute".to_string())
+        );
     }
 
     #[test]
