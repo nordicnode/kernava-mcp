@@ -1291,20 +1291,19 @@ fn test_rust_index() {
         "expected >=1 SameFile resolution (multiply→add), got {same_file_count}"
     );
 
-    // ponytail: Rust `use` paths (crate::math::add) don't match file-path qnames
-    // (path/math.rs.add) — ImportMap resolution is 0 for Rust in v1.
-    // When resolver learns crate-relative mapping, this assertion will break —
-    // update to assert import_map_count > 0 at that point.
-    assert_eq!(
-        import_map_count, 0,
-        "ImportMap should not resolve Rust use paths in v1"
+    // ImportMap now resolves Rust `use` paths: `use math::{add, multiply}`
+    // and `use util::helper` create import-map entries that resolve to the
+    // local module files (math.rs, util.rs) via `resolve_one_path`.
+    assert!(
+        import_map_count >= 3,
+        "expected >=3 ImportMap resolutions (add, multiply, helper), got {import_map_count}"
     );
 
-    // main.rs has cross-file calls (add, multiply, helper, Calculator::new, calc.compute)
-    // — most unresolved due to use-path mismatch. At least the SameFile one resolves.
+    // main.rs has cross-file calls: add, multiply, helper resolve via ImportMap;
+    // Calculator::new, calc.compute, println! remain unresolved (method/variadic).
     assert!(
-        resolved >= 1,
-        "expected >=1 resolved call edge, got {resolved}"
+        resolved >= 4,
+        "expected >=4 resolved call edges (SameFile + 3 ImportMap), got {resolved}"
     );
 
     // Verify graph cache loads
@@ -1316,11 +1315,14 @@ fn test_rust_index() {
         .get_node(&main_qname)
         .expect("main should be in graph");
 
-    // ponytail: main's cross-file calls (add, multiply, helper, Calculator::new,
-    // calc.compute) are all unresolved in v1 — `use` paths (crate::math::add) don't
-    // match file-path qnames, and builder skips edges when target is unresolved.
-    // main has 0 outgoing edges. When resolver gets crate-relative mapping, this
-    // will change — add edge-count assertions at that point.
+    // main now has outgoing edges to add, multiply, helper via ImportMap.
+    let main_node = graph.get_node(&main_qname).expect("main in graph");
+    let main_callees = graph.get_callees(main_node.id);
+    assert!(
+        main_callees.len() >= 3,
+        "main should have >=3 callees (add, multiply, helper), got {}",
+        main_callees.len()
+    );
 }
 
 fn go_fixture_dir() -> PathBuf {

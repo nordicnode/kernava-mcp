@@ -641,7 +641,37 @@ fn resolve_module_paths(map: &mut ModuleMap, file_path: &Path) {
 /// Extension is determined by the importing file's language (.ts for TS/TSX, .js for JS/JSX).
 /// Lexically normalizes `.` and `..` components without filesystem access.
 fn resolve_one_path(module_path: &str, parent: &Path, file_path: &Path) -> String {
-    // Only resolve relative imports (starts with ./ or ../)
+    // Rust: bare module names from `use foo::bar` where `foo` is declared
+    // via `mod foo;` need to be resolved to the actual file path.
+    // `mod math;` → parent/math.rs (or parent/math/mod.rs for directory modules).
+    if crate::parser::Language::from_path(file_path) == Some(crate::parser::Language::Rust) {
+        // Strip `::` suffix items: `use math::add` → module is `math`.
+        // For `std::collections::HashMap`, the first segment `std` is external.
+        // We only resolve modules that are single names or `name::rest` where
+        // `name` resolves to a local file (via `mod name;`).
+        let bare_module = if module_path.contains("::") {
+            module_path.split("::").next().unwrap_or(module_path)
+        } else {
+            module_path
+        };
+
+        if !bare_module.contains("/") && !bare_module.is_empty() {
+            // Try parent/bare_module.rs
+            let candidate = parent.join(format!("{bare_module}.rs"));
+            if candidate.exists() {
+                return canonicalize_path(&candidate);
+            }
+            // Try parent/bare_module/mod.rs (directory module)
+            let dir_candidate = parent.join(bare_module).join("mod.rs");
+            if dir_candidate.exists() {
+                return canonicalize_path(&dir_candidate);
+            }
+        }
+        // Not a local module — leave as-is (could be external crate)
+        return module_path.to_string();
+    }
+
+    // TS/JS/Python: only resolve relative imports (starts with ./ or ../)
     if !module_path.starts_with("./") && !module_path.starts_with("../") {
         return module_path.to_string();
     }
@@ -684,6 +714,13 @@ fn resolve_one_path(module_path: &str, parent: &Path, file_path: &Path) -> Strin
         }
     }
     out.to_string_lossy().into_owned()
+}
+
+/// Canonicalize a path, falling back to the raw path if fs::canonicalize fails.
+fn canonicalize_path(p: &Path) -> String {
+    std::fs::canonicalize(p)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string_lossy().into_owned())
 }
 
 /// Fast content hash using xxh3 (128-bit).
