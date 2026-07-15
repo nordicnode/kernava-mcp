@@ -19,7 +19,7 @@ Source files → tree-sitter (11 languages) → symbols + calls + imports
 ```
 
 - **Transport**: Streamable HTTP via [`rmcp`](https://crates.io/crates/rmcp). Long-lived process — the graph stays warm between MCP sessions. No stdio cold-start penalty.
-- **Storage**: SQLite-WAL with FTS5. Proven at 28M LOC with sub-ms queries.
+- **Storage**: SQLite-WAL with FTS5. Same architecture proven by [CBM](https://github.com/DeusData/codebase-memory-mcp) at 28M LOC with sub-ms queries. Large-repo soak test pending (§6.5).
 - **Graph**: Single global `GraphCache` (DashMap-backed) shared across all MCP sessions. Lock-free reads.
 - **Parsing**: tree-sitter, 11 languages. Incremental re-indexing on file watch with content-hash dedup.
 
@@ -124,6 +124,26 @@ Then configure your MCP client (below) to connect to `http://localhost:8080/mcp`
 ### Generic MCP Client
 
 Endpoint: `http://localhost:8080/mcp` (streamable HTTP, POST).
+
+## Configuration
+
+Place a `kernava.toml` at your project root to override defaults. All fields are optional:
+
+```toml
+# Maximum file size in bytes. Files larger than this are skipped during indexing.
+# Default: 1 MiB (1_048_576)
+max_file_size = 1_048_576
+
+# Additional glob patterns to ignore (beyond .gitignore).
+# Applied at file level, not directory level.
+# Default: []
+ignore = ["**/generated/**", "**/*.pb.go"]
+
+# Whether to follow symbolic links during file discovery.
+# Default: false — symlinks can cause cycles and index duplicate files.
+follow_symlinks = false
+```
+
 ## Workspace Layout
 
 ```
@@ -159,8 +179,9 @@ Measured with `criterion` on a debug build (Intel i5-9400, Linux). Release build
 | Symbol search (FTS5) | 34 µs | full-text search across all symbols |
 | Cross-style search | 38 µs | snake_case query matching camelCase symbol |
 
-11-language support, SQLite-WAL storage, sub-ms queries. The call graph stays
-warm in RAM across all MCP sessions — no cold starts.
+11-language support, SQLite-WAL storage. Queries measured at 34–38 µs on the
+test fixture (11 files). The call graph stays warm in RAM across all MCP
+sessions — no cold starts. Large-repo soak test pending (§6.5).
 
 ## License
 
