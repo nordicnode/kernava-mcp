@@ -44,16 +44,11 @@ fn parse_import_statement(node: &Node, source: &str, map: &mut ModuleMap) {
             }
             "aliased_import" => {
                 // `foo as bar` — name=foo (dotted_name), alias=bar (identifier)
-                let name = node_text(
-                    &child.child_by_field_name("name").unwrap_or(child),
-                    source,
-                );
+                let name = node_text(&child.child_by_field_name("name").unwrap_or(child), source);
                 let alias = child
                     .child_by_field_name("alias")
                     .map(|a| node_text(&a, source))
-                    .unwrap_or_else(|| {
-                        name.split('.').next().unwrap_or(&name).to_string()
-                    });
+                    .unwrap_or_else(|| name.split('.').next().unwrap_or(&name).to_string());
                 map.imports.insert(alias, name.clone());
                 map.module_paths.push(name);
             }
@@ -76,10 +71,7 @@ fn parse_import_from(node: &Node, source: &str, map: &mut ModuleMap) {
             }
             "aliased_import" => {
                 // `bar as baz` — name=bar, alias=baz
-                let name = node_text(
-                    &child.child_by_field_name("name").unwrap_or(child),
-                    source,
-                );
+                let name = node_text(&child.child_by_field_name("name").unwrap_or(child), source);
                 let alias = child
                     .child_by_field_name("alias")
                     .map(|a| node_text(&a, source))
@@ -180,7 +172,7 @@ mod tests {
     fn test_import_aliased() {
         let map = extract_py_imports("import numpy as np");
         assert_eq!(map.imports.get("np"), Some(&"numpy".to_string()));
-        assert!(map.imports.get("numpy").is_none());
+        assert!(!map.imports.contains_key("numpy"));
     }
 
     #[test]
@@ -193,7 +185,7 @@ mod tests {
     fn test_from_import_aliased() {
         let map = extract_py_imports("from math import sqrt as s");
         assert_eq!(map.imports.get("s"), Some(&"math".to_string()));
-        assert!(map.imports.get("sqrt").is_none());
+        assert!(!map.imports.contains_key("sqrt"));
     }
 
     #[test]
@@ -223,7 +215,10 @@ mod tests {
     #[test]
     fn test_from_relative_three_dot_import() {
         let map = extract_py_imports("from ...pkg.mod import helper");
-        assert_eq!(map.imports.get("helper"), Some(&"../../pkg/mod".to_string()));
+        assert_eq!(
+            map.imports.get("helper"),
+            Some(&"../../pkg/mod".to_string())
+        );
     }
 
     #[test]

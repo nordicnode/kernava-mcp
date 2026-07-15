@@ -427,7 +427,7 @@ impl KernavaHandler {
         let matching: Vec<_> = edges
             .iter()
             .filter(|e| {
-                e.edge_type == "calls" && params.call_line.map_or(true, |line| e.line == Some(line))
+                e.edge_type == "calls" && params.call_line.is_none_or(|line| e.line == Some(line))
             })
             .collect();
 
@@ -705,7 +705,9 @@ impl KernavaHandler {
         };
 
         match get_call_path(&self.state.graph, src.id, tgt.id, params.max_depth as usize) {
-            Some(path) if path.len() < 2 => Ok(format!("Source and target are the same symbol.")),
+            Some(path) if path.len() < 2 => {
+                Ok("Source and target are the same symbol.".to_string())
+            }
             Some(path) => {
                 let mut lines = Vec::with_capacity(path.len());
                 for (i, hop) in path.iter().enumerate() {
@@ -872,7 +874,11 @@ impl KernavaHandler {
                 .members
                 .iter()
                 .filter_map(|&nid| {
-                    store.get_node(nid).ok().flatten().map(|n| n.qualified_name.clone())
+                    store
+                        .get_node(nid)
+                        .ok()
+                        .flatten()
+                        .map(|n| n.qualified_name.clone())
                 })
                 .collect();
 
@@ -923,7 +929,12 @@ impl KernavaHandler {
         let entry_points: Vec<String> = all_nodes
             .iter()
             .filter(|n| n.is_exported || n.name == "main")
-            .map(|n| format!("  {} ({}) at line {}", n.qualified_name, n.kind, n.line_start))
+            .map(|n| {
+                format!(
+                    "  {} ({}) at line {}",
+                    n.qualified_name, n.kind, n.line_start
+                )
+            })
             .collect();
 
         // 4. Hub functions: top 10 by in-degree (reverse adjacency size)
@@ -938,7 +949,7 @@ impl KernavaHandler {
                 Some((node.qualified_name.clone(), callers))
             })
             .collect();
-        hub_list.sort_by(|a, b| b.1.cmp(&a.1));
+        hub_list.sort_by_key(|b| std::cmp::Reverse(b.1));
         let hub_lines: Vec<String> = hub_list
             .iter()
             .take(10)
@@ -1053,7 +1064,10 @@ impl KernavaHandler {
                 RiskLevel::Medium => &mut medium,
                 RiskLevel::Low => &mut low,
             };
-            target.push(format!("  {tag} {} ({file}:{}) — {total} transitive callers", n.qualified_name, n.line_start));
+            target.push(format!(
+                "  {tag} {} ({file}:{}) — {total} transitive callers",
+                n.qualified_name, n.line_start
+            ));
         }
 
         Ok(format!(

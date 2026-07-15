@@ -511,8 +511,14 @@ async fn test_architecture_summary() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.file_count, 5, "5 files in ts-small");
     assert_eq!(stats.node_count, 7, "7 symbols in ts-small");
-    assert!(!stats.language_distribution.is_empty(), "should have language data");
-    assert_eq!(stats.language_distribution[0].0, "typescript", "primary language");
+    assert!(
+        !stats.language_distribution.is_empty(),
+        "should have language data"
+    );
+    assert_eq!(
+        stats.language_distribution[0].0, "typescript",
+        "primary language"
+    );
 
     // Entry points: exported symbols + main
     let all_nodes = store.get_all_nodes().unwrap();
@@ -536,13 +542,16 @@ async fn test_architecture_summary() {
             Some((node.qualified_name.clone(), callers))
         })
         .collect();
-    hubs.sort_by(|a, b| b.1.cmp(&a.1));
+    hubs.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     // add, multiply, helper each have 1 caller (main).
     // main has 0 callers (not in reverse adj).
     assert!(!hubs.is_empty(), "should have hub functions");
     let max_callers = hubs[0].1;
-    assert_eq!(max_callers, 1, "top hub should have 1 caller (main calls each once)");
+    assert_eq!(
+        max_callers, 1,
+        "top hub should have 1 caller (main calls each once)"
+    );
 
     // Module structure: group_files_by_dir must not bucket all files under FS root.
     // Bug: strip_prefix fails with non-canonical project_root → all files land in
@@ -550,14 +559,18 @@ async fn test_architecture_summary() {
     use kernava_server::handler::group_files_by_dir;
     let all_nodes = store.get_all_nodes().unwrap();
     let dir_counts = group_files_by_dir(&store, &all_nodes, &fixture_root);
-    assert!(!dir_counts.is_empty(), "should have module-structure buckets");
+    assert!(
+        !dir_counts.is_empty(),
+        "should have module-structure buckets"
+    );
     // ts-small: 5 files directly under root → 1 "(root)" bucket, not FS root "/"
     assert!(
         !dir_counts.contains_key("/") && !dir_counts.contains_key(""),
         "no FS-root bucket — strip_prefix should succeed with canonical project_root"
     );
     assert_eq!(
-        dir_counts.values().sum::<usize>(), 5,
+        dir_counts.values().sum::<usize>(),
+        5,
         "all 5 files should be bucketed"
     );
     assert!(
@@ -591,7 +604,11 @@ async fn test_git_impact_risk_classification() {
     assert_eq!(classify_risk(1).1, RiskLevel::Low, "1 caller → LOW");
     assert_eq!(classify_risk(4).1, RiskLevel::Low, "4 callers → LOW");
     assert_eq!(classify_risk(5).1, RiskLevel::Medium, "5 callers → MEDIUM");
-    assert_eq!(classify_risk(20).1, RiskLevel::Medium, "20 callers → MEDIUM");
+    assert_eq!(
+        classify_risk(20).1,
+        RiskLevel::Medium,
+        "20 callers → MEDIUM"
+    );
     assert_eq!(classify_risk(21).1, RiskLevel::High, "21 callers → HIGH");
     assert_eq!(classify_risk(100).1, RiskLevel::High, "100 callers → HIGH");
 
@@ -668,7 +685,10 @@ async fn test_javascript_commonjs_server() {
     let search = kernava_store::fts5::search_symbols(store.conn(), "add", 10).unwrap();
     assert_eq!(search.len(), 1, "search 'add' → 1 result");
     assert_eq!(search[0].name, "add");
-    assert!(search[0].qualified_name.contains("math.js"), "qname should contain math.js");
+    assert!(
+        search[0].qualified_name.contains("math.js"),
+        "qname should contain math.js"
+    );
 
     // FTS5 search for "helper" → util.js.helper
     let search = kernava_store::fts5::search_symbols(store.conn(), "helper", 10).unwrap();
@@ -691,28 +711,41 @@ async fn test_javascript_commonjs_server() {
 
     // get_callees: graph forward adjacency for "main" → 3 callees
     let main_qname = format!("{}/main.js.main", fixture_root.to_string_lossy());
-    let main_node = graph.get_node(&main_qname).expect("main should be in graph");
-    let callees = graph.forward.get(&main_node.id).expect("main should have callees");
+    let main_node = graph
+        .get_node(&main_qname)
+        .expect("main should be in graph");
+    let callees = graph
+        .forward
+        .get(&main_node.id)
+        .expect("main should have callees");
     assert_eq!(callees.len(), 3, "main should call 3 functions");
 
     // Verify each callee name via store lookup
     let callee_names: Vec<String> = callees
         .iter()
         .map(|(target_id, _)| {
-            store.get_node(*target_id)
+            store
+                .get_node(*target_id)
                 .unwrap()
                 .map(|n| n.name)
                 .unwrap_or_default()
         })
         .collect();
     for expected in &["add", "multiply", "helper"] {
-        assert!(callee_names.iter().any(|n| n == expected), "main should call {expected}, got: {callee_names:?}");
+        assert!(
+            callee_names.iter().any(|n| n == expected),
+            "main should call {expected}, got: {callee_names:?}"
+        );
     }
 
     // graph reverse adjacency: "add" should have main as caller
     let reverse = graph.reverse.get(&add_node.id);
     assert!(reverse.is_some(), "add should be in reverse adjacency");
-    assert_eq!(reverse.unwrap().len(), 1, "add should have 1 caller in graph");
+    assert_eq!(
+        reverse.unwrap().len(),
+        1,
+        "add should have 1 caller in graph"
+    );
 
     drop(store);
     let _ = std::fs::remove_file(&db_path);
@@ -747,7 +780,10 @@ async fn test_python_import_server() {
     let search = kernava_store::fts5::search_symbols(store.conn(), "add", 10).unwrap();
     assert_eq!(search.len(), 1, "search 'add' → 1 result");
     assert_eq!(search[0].name, "add");
-    assert!(search[0].qualified_name.contains("math.py"), "qname should contain math.py");
+    assert!(
+        search[0].qualified_name.contains("math.py"),
+        "qname should contain math.py"
+    );
 
     // FTS5 search for "helper" → util.py.helper
     let search = kernava_store::fts5::search_symbols(store.conn(), "helper", 10).unwrap();
@@ -772,21 +808,35 @@ async fn test_python_import_server() {
     // (add, multiply, helper from .math/.util; create from .calc via class-qualified ImportMap)
     // main→compute is UNRESOLVED (calc is a local variable, filtered by builder).
     let main_qname = format!("{}/main.py.main", fixture_root.to_string_lossy());
-    let main_node = graph.get_node(&main_qname).expect("main should be in graph");
-    let callees = graph.forward.get(&main_node.id).expect("main should have callees");
-    assert_eq!(callees.len(), 4, "main should call 4 resolved functions, got {}", callees.len());
+    let main_node = graph
+        .get_node(&main_qname)
+        .expect("main should be in graph");
+    let callees = graph
+        .forward
+        .get(&main_node.id)
+        .expect("main should have callees");
+    assert_eq!(
+        callees.len(),
+        4,
+        "main should call 4 resolved functions, got {}",
+        callees.len()
+    );
 
     let callee_names: Vec<String> = callees
         .iter()
         .map(|(target_id, _)| {
-            store.get_node(*target_id)
+            store
+                .get_node(*target_id)
                 .unwrap()
                 .map(|n| n.name)
                 .unwrap_or_default()
         })
         .collect();
     for expected in &["add", "multiply", "helper", "create"] {
-        assert!(callee_names.iter().any(|n| n == expected), "main should call {expected}, got: {callee_names:?}");
+        assert!(
+            callee_names.iter().any(|n| n == expected),
+            "main should call {expected}, got: {callee_names:?}"
+        );
     }
 
     drop(store);

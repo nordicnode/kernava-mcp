@@ -28,7 +28,11 @@ fn bench_index_file(c: &mut Criterion) {
         "import { add } from './math';\nfunction main() { return add(1, 2); }\n",
     )
     .unwrap();
-    std::fs::write(dir.join("math.ts"), "export function add(a, b) { return a + b; }\n").unwrap();
+    std::fs::write(
+        dir.join("math.ts"),
+        "export function add(a, b) { return a + b; }\n",
+    )
+    .unwrap();
 
     c.bench_function("index_file_ts", |b| {
         b.iter(|| {
@@ -69,7 +73,11 @@ fn bench_query(c: &mut Criterion) {
     let dir = std::env::temp_dir().join("kernava_bench_query");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("app.ts"), "export function handleRequest() { return 42; }\n").unwrap();
+    std::fs::write(
+        dir.join("app.ts"),
+        "export function handleRequest() { return 42; }\n",
+    )
+    .unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
     builder::index_full(&mut store, &dir).unwrap();
@@ -90,5 +98,11 @@ fn bench_query(c: &mut Criterion) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-criterion_group!(benches, bench_parse, bench_index_file, bench_index_full, bench_query);
+criterion_group!(
+    benches,
+    bench_parse,
+    bench_index_file,
+    bench_index_full,
+    bench_query
+);
 criterion_main!(benches);

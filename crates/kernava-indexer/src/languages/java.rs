@@ -27,9 +27,13 @@ fn parse_import(node: &Node, source: &str, map: &mut ModuleMap) {
     // - optional `asterisk` (for wildcard imports like java.util.*)
     // - `;` punctuation
     let mut cursor = node.walk();
-    let scoped = node.children(&mut cursor).find(|c| c.kind() == "scoped_identifier");
+    let scoped = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "scoped_identifier");
 
-    let Some(scoped) = scoped else { return; };
+    let Some(scoped) = scoped else {
+        return;
+    };
     let path = node_text(&scoped, source);
 
     // Check for wildcard: sibling asterisk or path ends with .*
@@ -69,32 +73,44 @@ mod tests {
     #[test]
     fn test_single_import() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package com.example;
+        parse_imports_code(
+            r#"package com.example;
 import java.util.List;
 class Foo {}
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("List"), Some(&"java.util.List".to_string()));
     }
 
     #[test]
     fn test_wildcard_import() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package com.example;
+        parse_imports_code(
+            r#"package com.example;
 import java.util.*;
 class Foo {}
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("java.util"), Some(&"java.util".to_string()));
     }
 
     #[test]
     fn test_multiple_imports() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package com.example;
+        parse_imports_code(
+            r#"package com.example;
 import java.util.List;
 import com.example.math;
 class Foo {}
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("List"), Some(&"java.util.List".to_string()));
-        assert_eq!(map.imports.get("math"), Some(&"com.example.math".to_string()));
+        assert_eq!(
+            map.imports.get("math"),
+            Some(&"com.example.math".to_string())
+        );
     }
 }

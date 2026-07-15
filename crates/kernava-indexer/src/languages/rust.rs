@@ -162,7 +162,10 @@ mod tests {
     fn test_simple_use() {
         let mut map = ModuleMap::default();
         parse_imports_code("use std::collections::HashMap;", &mut map);
-        assert_eq!(map.imports.get("HashMap"), Some(&"std::collections::HashMap".to_string()));
+        assert_eq!(
+            map.imports.get("HashMap"),
+            Some(&"std::collections::HashMap".to_string())
+        );
     }
 
     #[test]

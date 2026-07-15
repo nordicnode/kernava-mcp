@@ -37,31 +37,34 @@ fn parse_using_directive(node: &Node, source: &str, map: &mut ModuleMap) {
     // Try alias first: using X = Some.Namespace;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        let (local_name, path) = if child.kind() == "using_alias_directive" || child.kind() == "using_directive" {
-            // Alias: look for `name` and `value` fields
-            let alias_name = child.child_by_field_name("name")
-                .map(|n| node_text(&n, source))
-                .unwrap_or_default();
-            let alias_value = child.child_by_field_name("value")
-                .map(|n| node_text(&n, source))
-                .unwrap_or_default();
-            if !alias_name.is_empty() && !alias_value.is_empty() {
-                (alias_name, alias_value)
+        let (local_name, path) =
+            if child.kind() == "using_alias_directive" || child.kind() == "using_directive" {
+                // Alias: look for `name` and `value` fields
+                let alias_name = child
+                    .child_by_field_name("name")
+                    .map(|n| node_text(&n, source))
+                    .unwrap_or_default();
+                let alias_value = child
+                    .child_by_field_name("value")
+                    .map(|n| node_text(&n, source))
+                    .unwrap_or_default();
+                if !alias_name.is_empty() && !alias_value.is_empty() {
+                    (alias_name, alias_value)
+                } else {
+                    // Non-alias: full qualified name text
+                    let raw = node_text(&child, source);
+                    // Strip trailing ;
+                    let raw = raw.trim_end_matches(';').trim();
+                    let local = raw.rsplit('.').next().unwrap_or(raw).to_string();
+                    (local, raw.to_string())
+                }
             } else {
-                // Non-alias: full qualified name text
+                // Direct child is the name node (identifier or qualified_name)
                 let raw = node_text(&child, source);
-                // Strip trailing ;
                 let raw = raw.trim_end_matches(';').trim();
                 let local = raw.rsplit('.').next().unwrap_or(raw).to_string();
                 (local, raw.to_string())
-            }
-        } else {
-            // Direct child is the name node (identifier or qualified_name)
-            let raw = node_text(&child, source);
-            let raw = raw.trim_end_matches(';').trim();
-            let local = raw.rsplit('.').next().unwrap_or(raw).to_string();
-            (local, raw.to_string())
-        };
+            };
 
         if !path.is_empty() {
             map.imports.insert(local_name, path.clone());
@@ -89,25 +92,37 @@ mod tests {
     #[test]
     fn test_single_using() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"using System;
-"#, &mut map);
+        parse_imports_code(
+            r#"using System;
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("System"), Some(&"System".to_string()));
     }
 
     #[test]
     fn test_qualified_using() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"using System.Collections.Generic;
-"#, &mut map);
-        assert_eq!(map.imports.get("Generic"), Some(&"System.Collections.Generic".to_string()));
+        parse_imports_code(
+            r#"using System.Collections.Generic;
+"#,
+            &mut map,
+        );
+        assert_eq!(
+            map.imports.get("Generic"),
+            Some(&"System.Collections.Generic".to_string())
+        );
     }
 
     #[test]
     fn test_multiple_using() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"using System;
+        parse_imports_code(
+            r#"using System;
 using Example.Math;
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("System"), Some(&"System".to_string()));
         assert_eq!(map.imports.get("Math"), Some(&"Example.Math".to_string()));
     }

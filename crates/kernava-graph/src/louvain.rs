@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 // kernava-graph: Louvain community detection
 // P4 task 4.7: Modularity optimization over symmetrized CALLS edges.
 //
@@ -57,7 +58,8 @@ pub fn detect_communities(cache: &GraphCache) -> Vec<Community> {
 
     // 3. Map original NodeIds to compact usize indices for the whole pipeline.
     let nodes: Vec<NodeId> = node_set.iter().copied().collect();
-    let id_to_idx: HashMap<NodeId, usize> = nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+    let id_to_idx: HashMap<NodeId, usize> =
+        nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
     let n = nodes.len();
 
     // Build usize-keyed adjacency + degrees
@@ -70,7 +72,12 @@ pub fn detect_communities(cache: &GraphCache) -> Vec<Community> {
         }
     }
     let k_u: Vec<f64> = (0..n)
-        .map(|i| adj_u.get(&i).map(|ns| ns.iter().map(|(_, w)| *w).sum()).unwrap_or(0.0))
+        .map(|i| {
+            adj_u
+                .get(&i)
+                .map(|ns| ns.iter().map(|(_, w)| *w).sum())
+                .unwrap_or(0.0)
+        })
         .collect();
     let idx_nodes: Vec<usize> = (0..n).collect();
 
@@ -147,12 +154,9 @@ fn build_adjacency(
     let adj: HashMap<NodeId, Vec<(NodeId, f64)>> = deduped
         .into_iter()
         .map(|(src, map)| (src, map.into_iter().collect::<Vec<_>>()))
-    .collect();
+        .collect();
 
-    let two_m: f64 = adj
-        .values()
-        .flat_map(|ns| ns.iter().map(|(_, w)| *w))
-        .sum();
+    let two_m: f64 = adj.values().flat_map(|ns| ns.iter().map(|(_, w)| *w)).sum();
 
     (adj, node_set, two_m)
 }
@@ -169,7 +173,7 @@ fn phase1(
 ) -> Vec<usize> {
     let n = nodes.len();
     if two_m < 1e-10 || n == 0 {
-        return (0..n).map(|i| i).collect();
+        return (0..n).collect();
     }
 
     let idx_of: HashMap<usize, usize> = nodes.iter().enumerate().map(|(i, &v)| (v, i)).collect();
@@ -301,11 +305,7 @@ fn compact_labels(comm: &[usize]) -> Vec<usize> {
 
 /// Compute weighted undirected modularity Q.
 /// Q = Σ_c [ Σ_in_c/(2m) - (Σ_tot_c/(2m))² ]
-fn compute_modularity(
-    comm: &[usize],
-    adj: &HashMap<usize, Vec<(usize, f64)>>,
-    two_m: f64,
-) -> f64 {
+fn compute_modularity(comm: &[usize], adj: &HashMap<usize, Vec<(usize, f64)>>, two_m: f64) -> f64 {
     if two_m < 1e-10 {
         return 0.0;
     }
@@ -394,7 +394,7 @@ fn build_communities(
         });
     }
 
-    communities.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+    communities.sort_by_key(|c| std::cmp::Reverse(c.members.len()));
     communities
 }
 
@@ -408,7 +408,7 @@ fn build_singleton_communities(node_set: &HashSet<NodeId>) -> Vec<Community> {
             external_edges: 0.0,
         })
         .collect();
-    communities.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+    communities.sort_by_key(|c| std::cmp::Reverse(c.members.len()));
     communities
 }
 
@@ -424,7 +424,9 @@ mod tests {
             .as_nanos();
         let db_path = format!("/tmp/kernava_louvain_{nanos}.db");
         let fixture_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("../../crates/kernava-indexer/tests/fixtures/{fixture_name}"))
+            .join(format!(
+                "../../crates/kernava-indexer/tests/fixtures/{fixture_name}"
+            ))
             .canonicalize()
             .unwrap();
         let mut store = Store::open(&db_path).unwrap();
@@ -445,7 +447,11 @@ mod tests {
         assert!(!communities.is_empty(), "should detect communities");
         // Total members should equal node count
         let total: usize = communities.iter().map(|c| c.members.len()).sum();
-        assert_eq!(total, cache.node_count(), "all nodes should be in a community");
+        assert_eq!(
+            total,
+            cache.node_count(),
+            "all nodes should be in a community"
+        );
     }
 
     #[test]
@@ -456,39 +462,69 @@ mod tests {
         let communities = detect_communities(&cache);
         assert!(!communities.is_empty(), "should detect communities");
         let total: usize = communities.iter().map(|c| c.members.len()).sum();
-        assert_eq!(total, cache.node_count(), "all nodes should be in a community");
+        assert_eq!(
+            total,
+            cache.node_count(),
+            "all nodes should be in a community"
+        );
         // With 4 connected nodes (main, add, multiply, helper) + 3 singletons
         // (process, other.helper, dead_function), the connected component should
         // likely form 1-2 communities.
         let largest = &communities[0];
-        assert!(largest.members.len() >= 2, "largest community should have ≥2 members");
+        assert!(
+            largest.members.len() >= 2,
+            "largest community should have ≥2 members"
+        );
     }
 
     #[test]
     fn test_louvain_empty_graph() {
         let cache = GraphCache::new();
         let communities = detect_communities(&cache);
-        assert!(communities.is_empty(), "empty graph should have no communities");
+        assert!(
+            communities.is_empty(),
+            "empty graph should have no communities"
+        );
     }
 
     #[test]
     fn test_louvain_no_edges() {
         // Nodes with no edges → all singletons
         let cache = GraphCache::new();
-        cache.nodes.insert(1, crate::model::Node {
-            id: 1, kind: "function".into(), name: "a".into(),
-            qualified_name: "a.ts.a".into(), file_id: 1,
-            line_start: 1, line_end: 1,
-            signature: None, return_type: None, receiver_type: None,
-            is_exported: false, complexity: 1,
-        });
-        cache.nodes.insert(2, crate::model::Node {
-            id: 2, kind: "function".into(), name: "b".into(),
-            qualified_name: "b.ts.b".into(), file_id: 2,
-            line_start: 1, line_end: 1,
-            signature: None, return_type: None, receiver_type: None,
-            is_exported: false, complexity: 1,
-        });
+        cache.nodes.insert(
+            1,
+            crate::model::Node {
+                id: 1,
+                kind: "function".into(),
+                name: "a".into(),
+                qualified_name: "a.ts.a".into(),
+                file_id: 1,
+                line_start: 1,
+                line_end: 1,
+                signature: None,
+                return_type: None,
+                receiver_type: None,
+                is_exported: false,
+                complexity: 1,
+            },
+        );
+        cache.nodes.insert(
+            2,
+            crate::model::Node {
+                id: 2,
+                kind: "function".into(),
+                name: "b".into(),
+                qualified_name: "b.ts.b".into(),
+                file_id: 2,
+                line_start: 1,
+                line_end: 1,
+                signature: None,
+                return_type: None,
+                receiver_type: None,
+                is_exported: false,
+                complexity: 1,
+            },
+        );
         let communities = detect_communities(&cache);
         assert_eq!(communities.len(), 2, "should have 2 singleton communities");
         for c in &communities {

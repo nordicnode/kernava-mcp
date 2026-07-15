@@ -45,13 +45,13 @@ impl GraphCache {
             self.nodes.insert(node.id, node.clone());
             self.by_name
                 .entry(node.name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(node.id);
             self.by_qualified
                 .insert(node.qualified_name.clone(), node.id);
             self.file_nodes
                 .entry(node.file_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(node.id);
         }
 
@@ -67,12 +67,12 @@ impl GraphCache {
                 // Forward: caller → [(callee, confidence)]
                 self.forward
                     .entry(edge.source)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((target, edge.confidence));
                 // Reverse: callee → [(caller, confidence)]
                 self.reverse
                     .entry(target)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((edge.source, edge.confidence));
             }
         }
@@ -132,14 +132,11 @@ impl GraphCache {
         for node in &nodes {
             self.by_name
                 .entry(node.name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(node.id);
             self.by_qualified
                 .insert(node.qualified_name.clone(), node.id);
-            self.file_nodes
-                .entry(file_id)
-                .or_insert_with(Vec::new)
-                .push(node.id);
+            self.file_nodes.entry(file_id).or_default().push(node.id);
             self.nodes.insert(node.id, node.clone());
         }
 
@@ -151,11 +148,11 @@ impl GraphCache {
             if let Some(target) = edge.target {
                 self.forward
                     .entry(edge.source)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((target, edge.confidence));
                 self.reverse
                     .entry(target)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((edge.source, edge.confidence));
             }
         }

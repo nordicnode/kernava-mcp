@@ -74,7 +74,6 @@ fn node_text(node: &Node, source: &str) -> String {
     source[start..end].to_string()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,39 +87,51 @@ mod tests {
     #[test]
     fn test_single_import() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package main
+        parse_imports_code(
+            r#"package main
 import "fmt"
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("fmt"), Some(&"fmt".to_string()));
     }
 
     #[test]
     fn test_path_import() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package main
+        parse_imports_code(
+            r#"package main
 import "path/to/pkg"
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("pkg"), Some(&"path/to/pkg".to_string()));
     }
 
     #[test]
     fn test_aliased_import() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package main
+        parse_imports_code(
+            r#"package main
 import f "fmt"
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("f"), Some(&"fmt".to_string()));
     }
 
     #[test]
     fn test_group_import() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"package main
+        parse_imports_code(
+            r#"package main
 import (
     "fmt"
     "path/to/pkg"
 )
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("fmt"), Some(&"fmt".to_string()));
         assert_eq!(map.imports.get("pkg"), Some(&"path/to/pkg".to_string()));
     }

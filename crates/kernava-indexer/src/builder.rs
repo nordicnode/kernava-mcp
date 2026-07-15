@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 // kernava-indexer: builder orchestrates parse → extract → resolve → upsert
 // P1 task 1.9: single-file indexing in one atomic SQLite transaction.
 
@@ -6,10 +7,10 @@ use crate::languages::ModuleMap;
 use crate::parser::Language;
 use crate::resolver::{self, FunctionRegistry};
 use anyhow::Result;
-use tracing::warn;
 use kernava_store::{EdgeRecord, FileRecord, ImportEdgeRecord, NodeRecord, Store};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 /// Result of indexing a single file.
 #[derive(Debug, Clone)]
@@ -110,9 +111,7 @@ pub fn index_file(store: &mut Store, file_path: &Path) -> Result<IndexFileResult
         .zip(resolved.iter())
         .filter_map(|(call, r)| {
             // Skip unresolved calls — only persist edges with a known target
-            if r.target_qualified.is_none() {
-                return None;
-            }
+            r.target_qualified.as_ref()?;
             let source_id = *qn_to_id.get(call.caller_qualified.as_ref()?)?;
 
             // Look up target_id: first try this file's new nodes, then fall back
@@ -298,7 +297,7 @@ fn topo_sort(files: &[PathBuf], deps: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<Pa
     while let Some(f) = queue.pop_front() {
         result.push(f.clone());
         if let Some(deps_list) = dependents.get(f) {
-            let deps_vec: Vec<&PathBuf> = deps_list.iter().copied().collect();
+            let deps_vec: Vec<&PathBuf> = deps_list.to_vec();
             for dependent in deps_vec {
                 let d = pending_deps.get_mut(dependent).unwrap();
                 *d -= 1;
@@ -727,7 +726,11 @@ mod tests {
             "/abs/dir/math.ts"
         );
         assert_eq!(
-            resolve_one_path("../sibling/util", parent, std::path::Path::new("/abs/dir/main.ts")),
+            resolve_one_path(
+                "../sibling/util",
+                parent,
+                std::path::Path::new("/abs/dir/main.ts")
+            ),
             "/abs/sibling/util.ts"
         );
         // JS: .js extension
@@ -752,7 +755,11 @@ mod tests {
         );
         // Already has extension — no extension appended
         assert_eq!(
-            resolve_one_path("./math.ts", parent, std::path::Path::new("/abs/dir/main.ts")),
+            resolve_one_path(
+                "./math.ts",
+                parent,
+                std::path::Path::new("/abs/dir/main.ts")
+            ),
             "/abs/dir/math.ts"
         );
     }
@@ -799,7 +806,10 @@ mod tests {
 
         let mut store = Store::open_in_memory().unwrap();
         let results = index_full(&mut store, &dir).unwrap();
-        assert!(results.is_empty(), "empty project should produce zero results");
+        assert!(
+            results.is_empty(),
+            "empty project should produce zero results"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

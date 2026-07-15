@@ -41,7 +41,7 @@ pub fn get_call_path(
     ));
 
     while let Some((node, path)) = queue.pop_front() {
-        if path.len() - 1 >= max_depth {
+        if path.len() > max_depth {
             continue;
         }
         for (callee, conf) in cache.get_callees(node) {

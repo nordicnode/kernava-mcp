@@ -25,12 +25,18 @@ fn parse_include(node: &Node, source: &str, map: &mut ModuleMap) {
         None => return,
     };
     // Strip <> or "" around the include path
-    let path = path.trim_matches(|c| c == '<' || c == '>' || c == '"').to_string();
+    let path = path
+        .trim_matches(|c| c == '<' || c == '>' || c == '"')
+        .to_string();
     if path.is_empty() {
         return;
     }
     // Strip extension for local name: stdio.h → stdio
-    let local = path.rsplit_once('.').map(|(base, _)| base).unwrap_or(&path).to_string();
+    let local = path
+        .rsplit_once('.')
+        .map(|(base, _)| base)
+        .unwrap_or(&path)
+        .to_string();
     let local = local.rsplit('/').next().unwrap_or(&local).to_string();
     map.imports.insert(local, path.clone());
     map.module_paths.push(path);
@@ -62,16 +68,22 @@ mod tests {
     #[test]
     fn test_local_include() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"#include "helper.h"
-"#, &mut map);
+        parse_imports_code(
+            r#"#include "helper.h"
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("helper"), Some(&"helper.h".to_string()));
     }
 
     #[test]
     fn test_path_include() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"#include "lib/thing.h"
-"#, &mut map);
+        parse_imports_code(
+            r#"#include "lib/thing.h"
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("thing"), Some(&"lib/thing.h".to_string()));
     }
 }

@@ -33,7 +33,8 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
     let state = Arc::new(AppState {
         store: Mutex::new(store),
         graph,
-        project_root: PathBuf::from(project_root).canonicalize()
+        project_root: PathBuf::from(project_root)
+            .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(project_root)),
     });
 

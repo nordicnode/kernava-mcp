@@ -85,7 +85,10 @@ impl Language {
 
     /// True for TypeScript-family languages (TS, TSX, JS, JSX).
     pub fn is_ts_family(self) -> bool {
-        matches!(self, Self::TypeScript | Self::Tsx | Self::JavaScript | Self::Jsx)
+        matches!(
+            self,
+            Self::TypeScript | Self::Tsx | Self::JavaScript | Self::Jsx
+        )
     }
 
     /// True for Rust.
@@ -110,8 +113,6 @@ impl Language {
 
     /// ponytail: Kotlin deferred — fwcd/tree-sitter-kotlin 0.3.8 requires tree-sitter <0.23,
     /// incompatible with workspace 0.25. Revisit when fwcd updates or a fork supports 0.25.
-
-
     /// True for Ruby.
     pub fn is_ruby(self) -> bool {
         matches!(self, Self::Ruby)

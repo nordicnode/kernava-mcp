@@ -96,17 +96,10 @@ fn extract_import_specifier(
     let mut local_name: Option<String> = None;
 
     for child in node.children(&mut cursor) {
-        match child.kind() {
-            "identifier" => {
-                // First identifier is the imported name;
-                // if there's an `as` alias, the second identifier is the local name
-                if local_name.is_none() {
-                    local_name = Some(node_text(&child, source));
-                } else {
-                    local_name = Some(node_text(&child, source));
-                }
-            }
-            _ => {}
+        if child.kind() == "identifier" {
+            // Last identifier wins: for `foo as bar`, stores `bar` (the local alias
+            // callers use). For plain `foo`, stores `foo`.
+            local_name = Some(node_text(&child, source));
         }
     }
 
@@ -176,7 +169,9 @@ fn scan_requires(node: &tree_sitter::Node, source: &str, map: &mut ModuleMap) {
                             {
                                 let local = node_text(&prop, source);
                                 map.imports.insert(local, module_path.clone());
-                            } else if prop.kind() == "pair_pattern" || prop.kind() == "pair_property" {
+                            } else if prop.kind() == "pair_pattern"
+                                || prop.kind() == "pair_property"
+                            {
                                 // { foo: bar } — bar is local, foo is imported name
                                 if let Some(value) = prop.child_by_field_name("value") {
                                     if value.kind() == "identifier" {
@@ -271,7 +266,7 @@ mod tests {
         let map = extract_imports(src);
         // The local name (what the code uses) is "baz"
         assert_eq!(map.imports.get("baz"), Some(&"./utils".to_string()));
-        assert!(map.imports.get("foo").is_none());
+        assert!(!map.imports.contains_key("foo"));
     }
 
     #[test]
@@ -339,6 +334,6 @@ mod tests {
         let src = "const { foo: bar } = require('./mod');";
         let map = extract_requires(src);
         assert_eq!(map.imports.get("bar"), Some(&"./mod".to_string()));
-        assert!(map.imports.get("foo").is_none());
+        assert!(!map.imports.contains_key("foo"));
     }
 }

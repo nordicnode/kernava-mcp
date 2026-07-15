@@ -936,7 +936,11 @@ fn test_javascript_commonjs_index() {
     // Count symbols
     let all_nodes = store.get_all_nodes().unwrap();
     let symbol_names: Vec<_> = all_nodes.iter().map(|n| n.name.clone()).collect();
-    assert_eq!(all_nodes.len(), 5, "should extract 5 symbols, got: {symbol_names:?}");
+    assert_eq!(
+        all_nodes.len(),
+        5,
+        "should extract 5 symbols, got: {symbol_names:?}"
+    );
 
     // Verify all expected symbols present
     for expected in &["main", "add", "multiply", "helper", "process"] {
@@ -960,7 +964,8 @@ fn test_javascript_commonjs_index() {
 
     // main calls add, multiply, helper → 3 resolved call edges
     assert_eq!(
-        calls.len(), 3,
+        calls.len(),
+        3,
         "should have 3 call edges (main→add, main→multiply, main→helper)"
     );
     assert_eq!(
@@ -969,16 +974,17 @@ fn test_javascript_commonjs_index() {
     );
 
     // process is never called (dead code)
-    let process_called = calls
-        .iter()
-        .any(|(_, tid, _, _)| {
-            tid.map(|id| {
-                store.get_node(id).ok().flatten()
-                    .map(|n| n.name == "process")
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-        });
+    let process_called = calls.iter().any(|(_, tid, _, _)| {
+        tid.map(|id| {
+            store
+                .get_node(id)
+                .ok()
+                .flatten()
+                .map(|n| n.name == "process")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    });
     assert!(!process_called, "process should not be called by anyone");
 
     // Verify graph cache works
@@ -987,19 +993,18 @@ fn test_javascript_commonjs_index() {
 
     // Find main in graph
     let main_qname = format!("{}/main.js.main", dir.to_string_lossy());
-    let main_node = graph.get_node(&main_qname).expect("main should be in graph");
+    let main_node = graph
+        .get_node(&main_qname)
+        .expect("main should be in graph");
 
     // main should have 3 outgoing calls
     let callees = graph.forward.get(&main_node.id);
-    assert!(
-        callees.is_some(),
-        "main should have outgoing call edges"
-    );
+    assert!(callees.is_some(), "main should have outgoing call edges");
     assert_eq!(
-        callees.unwrap().len(), 3,
+        callees.unwrap().len(),
+        3,
         "main should call 3 functions (add, multiply, helper)"
     );
-
 }
 
 // ── Python tests ─────────────────────────────────────────
@@ -1031,7 +1036,11 @@ fn test_python_import_index() {
     let all_nodes = store.get_all_nodes().unwrap();
     let symbol_names: Vec<_> = all_nodes.iter().map(|n| n.name.clone()).collect();
     // 9 symbols: main, add, multiply, helper, process, Calculator, compute, create, value
-    assert_eq!(all_nodes.len(), 9, "should extract 9 symbols, got: {symbol_names:?}");
+    assert_eq!(
+        all_nodes.len(),
+        9,
+        "should extract 9 symbols, got: {symbol_names:?}"
+    );
 
     // Verify top-level functions present
     for expected in &["main", "add", "multiply", "helper", "process"] {
@@ -1042,17 +1051,32 @@ fn test_python_import_index() {
     }
 
     // Verify class + decorated methods present
-    assert!(symbol_names.iter().any(|s| s == "Calculator"), "missing class Calculator");
-    assert!(symbol_names.iter().any(|s| s == "compute"), "missing method compute");
-    assert!(symbol_names.iter().any(|s| s == "create"), "missing decorated method create (@staticmethod)");
-    assert!(symbol_names.iter().any(|s| s == "value"), "missing decorated method value (@property)");
+    assert!(
+        symbol_names.iter().any(|s| s == "Calculator"),
+        "missing class Calculator"
+    );
+    assert!(
+        symbol_names.iter().any(|s| s == "compute"),
+        "missing method compute"
+    );
+    assert!(
+        symbol_names.iter().any(|s| s == "create"),
+        "missing decorated method create (@staticmethod)"
+    );
+    assert!(
+        symbol_names.iter().any(|s| s == "value"),
+        "missing decorated method value (@property)"
+    );
 
     // Verify class methods have qualified names with class prefix
     let calc_qname = format!("{}/calc.py.Calculator.compute", dir.to_string_lossy());
     assert!(
         all_nodes.iter().any(|n| n.qualified_name == calc_qname),
         "compute should have qualified name {calc_qname}, got qnames: {:?}",
-        all_nodes.iter().map(|n| &n.qualified_name).collect::<Vec<_>>()
+        all_nodes
+            .iter()
+            .map(|n| &n.qualified_name)
+            .collect::<Vec<_>>()
     );
 
     let stats = store.stats().unwrap();
@@ -1076,24 +1100,37 @@ fn test_python_import_index() {
         .filter(|(_, _, et, _)| et == "calls")
         .filter_map(|(_, _, _, meta)| meta.as_ref())
         .collect();
-    let import_map_count = call_strategies.iter().filter(|s| s.as_str() == "ImportMap").count();
-    let same_file_count = call_strategies.iter().filter(|s| s.as_str() == "SameFile").count();
+    let import_map_count = call_strategies
+        .iter()
+        .filter(|s| s.as_str() == "ImportMap")
+        .count();
+    let same_file_count = call_strategies
+        .iter()
+        .filter(|s| s.as_str() == "SameFile")
+        .count();
 
-    assert_eq!(import_map_count, 4, "4 calls via ImportMap: add, multiply, helper, create");
-    assert_eq!(same_file_count, 1, "1 call via SameFile: Calculator() constructor in create");
+    assert_eq!(
+        import_map_count, 4,
+        "4 calls via ImportMap: add, multiply, helper, create"
+    );
+    assert_eq!(
+        same_file_count, 1,
+        "1 call via SameFile: Calculator() constructor in create"
+    );
     assert_eq!(resolved, 5, "5 total resolved: 4 ImportMap + 1 SameFile");
 
     // process is never called (dead code)
-    let process_called = calls
-        .iter()
-        .any(|(_, tid, _, _)| {
-            tid.map(|id| {
-                store.get_node(id).ok().flatten()
-                    .map(|n| n.name == "process")
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-        });
+    let process_called = calls.iter().any(|(_, tid, _, _)| {
+        tid.map(|id| {
+            store
+                .get_node(id)
+                .ok()
+                .flatten()
+                .map(|n| n.name == "process")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    });
     assert!(!process_called, "process should not be called by anyone");
 
     // Verify graph cache
@@ -1101,7 +1138,9 @@ fn test_python_import_index() {
     graph.load_from_store(&store).unwrap();
 
     let main_qname = format!("{}/main.py.main", dir.to_string_lossy());
-    let main_node = graph.get_node(&main_qname).expect("main should be in graph");
+    let main_node = graph
+        .get_node(&main_qname)
+        .expect("main should be in graph");
 
     // main has 3 resolved outgoing calls (add, multiply, helper)
     // ponytail: Calculator.create() and calc.compute() from main are unresolved —
@@ -1145,13 +1184,22 @@ fn test_rust_index() {
     let results = kernava_indexer::builder::index_full(&mut store, &dir).unwrap();
 
     // 4 files: math.rs, util.rs, calc.rs, main.rs
-    assert_eq!(results.len(), 4, "should index 4 Rust files, got {}", results.len());
+    assert_eq!(
+        results.len(),
+        4,
+        "should index 4 Rust files, got {}",
+        results.len()
+    );
 
     let all_nodes = store.get_all_nodes().unwrap();
     let symbol_names: Vec<_> = all_nodes.iter().map(|n| n.name.clone()).collect();
 
     // Symbols: add, multiply (math.rs), helper (util.rs), Calculator, new, compute (calc.rs), main (main.rs)
-    assert_eq!(all_nodes.len(), 7, "should extract 7 symbols, got: {symbol_names:?}");
+    assert_eq!(
+        all_nodes.len(),
+        7,
+        "should extract 7 symbols, got: {symbol_names:?}"
+    );
 
     // Verify functions present
     for expected in &["add", "multiply", "helper", "main"] {
@@ -1162,16 +1210,28 @@ fn test_rust_index() {
     }
 
     // Verify struct + methods present
-    assert!(symbol_names.iter().any(|s| s == "Calculator"), "missing struct Calculator");
-    assert!(symbol_names.iter().any(|s| s == "new"), "missing method new");
-    assert!(symbol_names.iter().any(|s| s == "compute"), "missing method compute");
+    assert!(
+        symbol_names.iter().any(|s| s == "Calculator"),
+        "missing struct Calculator"
+    );
+    assert!(
+        symbol_names.iter().any(|s| s == "new"),
+        "missing method new"
+    );
+    assert!(
+        symbol_names.iter().any(|s| s == "compute"),
+        "missing method compute"
+    );
 
     // Verify class methods have qualified names with struct prefix
     let compute_qname = format!("{}/calc.rs.Calculator.compute", dir.to_string_lossy());
     assert!(
         all_nodes.iter().any(|n| n.qualified_name == compute_qname),
         "compute should have qualified name {compute_qname}, got qnames: {:?}",
-        all_nodes.iter().map(|n| &n.qualified_name).collect::<Vec<_>>()
+        all_nodes
+            .iter()
+            .map(|n| &n.qualified_name)
+            .collect::<Vec<_>>()
     );
 
     let stats = store.stats().unwrap();
@@ -1182,13 +1242,25 @@ fn test_rust_index() {
 
     // Verify is_exported: pub functions/structs/methods are exported
     let add_node = all_nodes.iter().find(|n| n.name == "add").unwrap();
-    assert!(add_node.is_exported, "pub fn add should be is_exported=true");
+    assert!(
+        add_node.is_exported,
+        "pub fn add should be is_exported=true"
+    );
     let calc_node = all_nodes.iter().find(|n| n.name == "Calculator").unwrap();
-    assert!(calc_node.is_exported, "pub struct Calculator should be is_exported=true");
+    assert!(
+        calc_node.is_exported,
+        "pub struct Calculator should be is_exported=true"
+    );
     let new_node = all_nodes.iter().find(|n| n.name == "new").unwrap();
-    assert!(new_node.is_exported, "pub fn new should be is_exported=true");
+    assert!(
+        new_node.is_exported,
+        "pub fn new should be is_exported=true"
+    );
     let compute_node = all_nodes.iter().find(|n| n.name == "compute").unwrap();
-    assert!(compute_node.is_exported, "pub fn compute should be is_exported=true");
+    assert!(
+        compute_node.is_exported,
+        "pub fn compute should be is_exported=true"
+    );
 
     // Verify call edges
     let edges = get_all_edges(&store);
@@ -1201,28 +1273,45 @@ fn test_rust_index() {
         .filter(|(_, _, et, _)| et == "calls")
         .filter_map(|(_, _, _, meta)| meta.as_ref())
         .collect();
-    let same_file_count = call_strategies.iter().filter(|s| s.as_str() == "SameFile").count();
-    let import_map_count = call_strategies.iter().filter(|s| s.as_str() == "ImportMap").count();
+    let same_file_count = call_strategies
+        .iter()
+        .filter(|s| s.as_str() == "SameFile")
+        .count();
+    let import_map_count = call_strategies
+        .iter()
+        .filter(|s| s.as_str() == "ImportMap")
+        .count();
 
     // multiply calls add in math.rs — SameFile resolution
-    assert!(same_file_count >= 1, "expected >=1 SameFile resolution (multiply→add), got {same_file_count}");
+    assert!(
+        same_file_count >= 1,
+        "expected >=1 SameFile resolution (multiply→add), got {same_file_count}"
+    );
 
     // ponytail: Rust `use` paths (crate::math::add) don't match file-path qnames
     // (path/math.rs.add) — ImportMap resolution is 0 for Rust in v1.
     // When resolver learns crate-relative mapping, this assertion will break —
     // update to assert import_map_count > 0 at that point.
-    assert_eq!(import_map_count, 0, "ImportMap should not resolve Rust use paths in v1");
+    assert_eq!(
+        import_map_count, 0,
+        "ImportMap should not resolve Rust use paths in v1"
+    );
 
     // main.rs has cross-file calls (add, multiply, helper, Calculator::new, calc.compute)
     // — most unresolved due to use-path mismatch. At least the SameFile one resolves.
-    assert!(resolved >= 1, "expected >=1 resolved call edge, got {resolved}");
+    assert!(
+        resolved >= 1,
+        "expected >=1 resolved call edge, got {resolved}"
+    );
 
     // Verify graph cache loads
     let graph = GraphCache::new();
     graph.load_from_store(&store).unwrap();
 
     let main_qname = format!("{}/main.rs.main", dir.to_string_lossy());
-    graph.get_node(&main_qname).expect("main should be in graph");
+    graph
+        .get_node(&main_qname)
+        .expect("main should be in graph");
 
     // ponytail: main's cross-file calls (add, multiply, helper, Calculator::new,
     // calc.compute) are all unresolved in v1 — `use` paths (crate::math::add) don't
@@ -1259,7 +1348,12 @@ fn test_go_index() {
     let results = kernava_indexer::builder::index_full(&mut store, &dir).unwrap();
 
     // 3 files: main.go, calc.go, math.go
-    assert_eq!(results.len(), 3, "should index 3 Go files, got {}", results.len());
+    assert_eq!(
+        results.len(),
+        3,
+        "should index 3 Go files, got {}",
+        results.len()
+    );
 
     let all_nodes = store.get_all_nodes().unwrap();
     let symbol_names: Vec<_> = all_nodes.iter().map(|n| n.name.clone()).collect();
@@ -1267,7 +1361,11 @@ fn test_go_index() {
     // main.go: Add, helper, main (3)
     // calc.go: Calculator, Add (method), subtract, compute (4)
     // math.go: MathResult, MathOps, Result (3)
-    assert_eq!(all_nodes.len(), 10, "should extract 10 symbols, got: {symbol_names:?}");
+    assert_eq!(
+        all_nodes.len(),
+        10,
+        "should extract 10 symbols, got: {symbol_names:?}"
+    );
 
     // Verify free functions present
     for expected in &["Add", "helper", "main"] {
@@ -1280,16 +1378,28 @@ fn test_go_index() {
     // Verify struct types → Class
     let calc_node = all_nodes.iter().find(|n| n.name == "Calculator");
     assert!(calc_node.is_some(), "missing Calculator struct");
-    assert_eq!(calc_node.unwrap().kind, "class", "Calculator should be class kind");
+    assert_eq!(
+        calc_node.unwrap().kind,
+        "class",
+        "Calculator should be class kind"
+    );
 
     let math_ops = all_nodes.iter().find(|n| n.name == "MathOps");
     assert!(math_ops.is_some(), "missing MathOps struct");
-    assert_eq!(math_ops.unwrap().kind, "class", "MathOps should be class kind");
+    assert_eq!(
+        math_ops.unwrap().kind,
+        "class",
+        "MathOps should be class kind"
+    );
 
     // Verify interface type → Interface
     let math_result = all_nodes.iter().find(|n| n.name == "MathResult");
     assert!(math_result.is_some(), "missing MathResult interface");
-    assert_eq!(math_result.unwrap().kind, "interface", "MathResult should be interface kind");
+    assert_eq!(
+        math_result.unwrap().kind,
+        "interface",
+        "MathResult should be interface kind"
+    );
 
     // Verify methods present with correct qualified names
     // Pointer receiver: *Calculator → Calculator in qname
@@ -1297,31 +1407,51 @@ fn test_go_index() {
     assert!(
         all_nodes.iter().any(|n| n.qualified_name == subtract_qname),
         "subtract should have qname {subtract_qname}, got: {:?}",
-        all_nodes.iter().map(|n| &n.qualified_name).collect::<Vec<_>>()
+        all_nodes
+            .iter()
+            .map(|n| &n.qualified_name)
+            .collect::<Vec<_>>()
     );
 
     // Value receiver: Calculator.Add
     let add_method_qname = format!("{}/calc.go.Calculator.Add", dir.to_string_lossy());
     assert!(
-        all_nodes.iter().any(|n| n.qualified_name == add_method_qname),
+        all_nodes
+            .iter()
+            .any(|n| n.qualified_name == add_method_qname),
         "Add method should have qname {add_method_qname}"
     );
 
     // Go is_exported: uppercase = exported, lowercase = not
-    let free_add = all_nodes.iter().find(|n| n.name == "Add" && n.qualified_name.contains("main.go")).unwrap();
+    let free_add = all_nodes
+        .iter()
+        .find(|n| n.name == "Add" && n.qualified_name.contains("main.go"))
+        .unwrap();
     assert!(free_add.is_exported, "Add (free func) should be exported");
 
     let helper_node = all_nodes.iter().find(|n| n.name == "helper").unwrap();
-    assert!(!helper_node.is_exported, "helper should NOT be exported (lowercase)");
+    assert!(
+        !helper_node.is_exported,
+        "helper should NOT be exported (lowercase)"
+    );
 
     let subtract_node = all_nodes.iter().find(|n| n.name == "subtract").unwrap();
-    assert!(!subtract_node.is_exported, "subtract should NOT be exported (lowercase)");
+    assert!(
+        !subtract_node.is_exported,
+        "subtract should NOT be exported (lowercase)"
+    );
 
     let calc_struct = all_nodes.iter().find(|n| n.name == "Calculator").unwrap();
-    assert!(calc_struct.is_exported, "Calculator (uppercase) should be exported");
+    assert!(
+        calc_struct.is_exported,
+        "Calculator (uppercase) should be exported"
+    );
 
     let result_node = all_nodes.iter().find(|n| n.name == "MathResult").unwrap();
-    assert!(result_node.is_exported, "MathResult (uppercase) should be exported");
+    assert!(
+        result_node.is_exported,
+        "MathResult (uppercase) should be exported"
+    );
 
     // Verify language
     let stats = store.stats().unwrap();
@@ -1340,23 +1470,40 @@ fn test_go_index() {
         .filter(|(_, _, et, _)| et == "calls")
         .filter_map(|(_, _, _, meta)| meta.as_ref())
         .collect();
-    let same_file_count = call_strategies.iter().filter(|s| s.as_str() == "SameFile").count();
-    let import_map_count = call_strategies.iter().filter(|s| s.as_str() == "ImportMap").count();
+    let same_file_count = call_strategies
+        .iter()
+        .filter(|s| s.as_str() == "SameFile")
+        .count();
+    let import_map_count = call_strategies
+        .iter()
+        .filter(|s| s.as_str() == "ImportMap")
+        .count();
 
     // main→Add and main→helper in main.go, compute→Add and compute→subtract in calc.go
-    assert!(same_file_count >= 2, "expected >=2 SameFile resolutions, got {same_file_count}");
-    assert!(resolved >= 2, "expected >=2 resolved call edges, got {resolved}");
+    assert!(
+        same_file_count >= 2,
+        "expected >=2 SameFile resolutions, got {same_file_count}"
+    );
+    assert!(
+        resolved >= 2,
+        "expected >=2 resolved call edges, got {resolved}"
+    );
 
     // ponytail: Go import paths ("fmt") don't match file-path qnames — ImportMap=0 for v1.
     // When resolver learns Go package-to-path mapping, update to assert > 0.
-    assert_eq!(import_map_count, 0, "ImportMap should not resolve Go import paths in v1");
+    assert_eq!(
+        import_map_count, 0,
+        "ImportMap should not resolve Go import paths in v1"
+    );
 
     // Verify graph cache loads
     let graph = GraphCache::new();
     graph.load_from_store(&store).unwrap();
 
     let main_qname = format!("{}/main.go.main", dir.to_string_lossy());
-    graph.get_node(&main_qname).expect("main should be in graph");
+    graph
+        .get_node(&main_qname)
+        .expect("main should be in graph");
 }
 
 fn java_fixture_dir() -> PathBuf {
@@ -1383,11 +1530,23 @@ fn test_java_index() {
     // calc.java: Calculator, __construct, add, helper, compute (5 methods + 1 class)
     //            Math interface, Color enum — Math has 1 method (compute)
     // main.java: Main, main
-    assert!(names.contains(&"Calculator".to_string()), "missing Calculator: {names:?}");
+    assert!(
+        names.contains(&"Calculator".to_string()),
+        "missing Calculator: {names:?}"
+    );
     assert!(names.contains(&"add".to_string()), "missing add: {names:?}");
-    assert!(names.contains(&"helper".to_string()), "missing helper: {names:?}");
-    assert!(names.contains(&"compute".to_string()), "missing compute: {names:?}");
-    assert!(names.contains(&"Math".to_string()), "missing Math interface");
+    assert!(
+        names.contains(&"helper".to_string()),
+        "missing helper: {names:?}"
+    );
+    assert!(
+        names.contains(&"compute".to_string()),
+        "missing compute: {names:?}"
+    );
+    assert!(
+        names.contains(&"Math".to_string()),
+        "missing Math interface"
+    );
     assert!(names.contains(&"Color".to_string()), "missing Color enum");
     assert!(names.contains(&"Main".to_string()), "missing Main class");
     assert!(names.contains(&"main".to_string()), "missing main method");
@@ -1406,13 +1565,20 @@ fn test_java_index() {
 
     // Method qnames: {file}.Calculator.add
     let add_qn = all_nodes.iter().find(|n| n.name == "add").unwrap();
-    assert!(add_qn.qualified_name.contains("Calculator.add"), "add qname wrong: {}", add_qn.qualified_name);
+    assert!(
+        add_qn.qualified_name.contains("Calculator.add"),
+        "add qname wrong: {}",
+        add_qn.qualified_name
+    );
 
     // Call edges — SameFile resolves in-file calls
     let edges = get_all_edges(&store);
     let calls: Vec<_> = edges.iter().filter(|(_, _, et, _)| et == "calls").collect();
     let resolved = calls.iter().filter(|(_, tid, _, _)| tid.is_some()).count();
-    assert!(resolved >= 2, "expected >=2 resolved call edges, got {resolved}");
+    assert!(
+        resolved >= 2,
+        "expected >=2 resolved call edges, got {resolved}"
+    );
 
     let graph = GraphCache::new();
     graph.load_from_store(&store).unwrap();
@@ -1438,11 +1604,17 @@ fn test_csharp_index() {
     let all_nodes = store.get_all_nodes().unwrap();
     let names: Vec<_> = all_nodes.iter().map(|n| n.name.clone()).collect();
 
-    assert!(names.contains(&"Calculator".to_string()), "missing Calculator: {names:?}");
+    assert!(
+        names.contains(&"Calculator".to_string()),
+        "missing Calculator: {names:?}"
+    );
     assert!(names.contains(&"Add".to_string()), "missing Add: {names:?}");
     assert!(names.contains(&"Helper".to_string()), "missing Helper");
     assert!(names.contains(&"Compute".to_string()), "missing Compute");
-    assert!(names.contains(&"IMath".to_string()), "missing IMath interface");
+    assert!(
+        names.contains(&"IMath".to_string()),
+        "missing IMath interface"
+    );
     assert!(names.contains(&"Color".to_string()), "missing Color enum");
     assert!(names.contains(&"Main".to_string()), "missing Main class");
     assert!(names.contains(&"Run".to_string()), "missing Run method");
@@ -1460,7 +1632,10 @@ fn test_csharp_index() {
     let edges = get_all_edges(&store);
     let calls: Vec<_> = edges.iter().filter(|(_, _, et, _)| et == "calls").collect();
     let resolved = calls.iter().filter(|(_, tid, _, _)| tid.is_some()).count();
-    assert!(resolved >= 2, "expected >=2 resolved call edges, got {resolved}");
+    assert!(
+        resolved >= 2,
+        "expected >=2 resolved call edges, got {resolved}"
+    );
 
     let graph = GraphCache::new();
     graph.load_from_store(&store).unwrap();
@@ -1489,12 +1664,18 @@ fn test_ruby_index() {
     // Calculator class + initialize, add, helper, compute methods
     // Math module + compute method
     // free_function
-    assert!(names.contains(&"Calculator".to_string()), "missing Calculator: {names:?}");
+    assert!(
+        names.contains(&"Calculator".to_string()),
+        "missing Calculator: {names:?}"
+    );
     assert!(names.contains(&"add".to_string()), "missing add");
     assert!(names.contains(&"helper".to_string()), "missing helper");
     assert!(names.contains(&"compute".to_string()), "missing compute");
     assert!(names.contains(&"Math".to_string()), "missing Math module");
-    assert!(names.contains(&"free_function".to_string()), "missing free_function");
+    assert!(
+        names.contains(&"free_function".to_string()),
+        "missing free_function"
+    );
 
     let calc = all_nodes.iter().find(|n| n.name == "Calculator").unwrap();
     assert_eq!(calc.kind, "class");
@@ -1535,12 +1716,18 @@ fn test_php_index() {
     // Calculator class + __construct, add, helper, compute methods
     // Math interface + compute method
     // free_function
-    assert!(names.contains(&"Calculator".to_string()), "missing Calculator: {names:?}");
+    assert!(
+        names.contains(&"Calculator".to_string()),
+        "missing Calculator: {names:?}"
+    );
     assert!(names.contains(&"add".to_string()), "missing add");
     assert!(names.contains(&"helper".to_string()), "missing helper");
     assert!(names.contains(&"compute".to_string()), "missing compute");
     assert!(names.contains(&"Math".to_string()), "missing Math iface");
-    assert!(names.contains(&"free_function".to_string()), "missing free_function");
+    assert!(
+        names.contains(&"free_function".to_string()),
+        "missing free_function"
+    );
 
     let calc = all_nodes.iter().find(|n| n.name == "Calculator").unwrap();
     assert_eq!(calc.kind, "class");
@@ -1557,7 +1744,11 @@ fn test_php_index() {
         extract_result.calls.len() >= 2,
         "expected >=2 extracted calls, got {} ({:?})",
         extract_result.calls.len(),
-        extract_result.calls.iter().map(|c| &c.callee).collect::<Vec<_>>()
+        extract_result
+            .calls
+            .iter()
+            .map(|c| &c.callee)
+            .collect::<Vec<_>>()
     );
     // Store-level: unresolved calls are filtered by builder, so 0 resolved edges is
     // expected in v1. Not pinned to avoid masking resolver improvements.
@@ -1592,7 +1783,10 @@ fn test_c_index() {
     assert!(names.contains(&"helper".to_string()), "missing helper");
     assert!(names.contains(&"main".to_string()), "missing main");
     assert!(names.contains(&"Point".to_string()), "missing Point struct");
-    assert!(names.contains(&"point_sum".to_string()), "missing point_sum");
+    assert!(
+        names.contains(&"point_sum".to_string()),
+        "missing point_sum"
+    );
     assert!(names.contains(&"Color".to_string()), "missing Color enum");
     assert!(names.contains(&"Value".to_string()), "missing Value union");
 
@@ -1638,7 +1832,10 @@ fn test_cpp_index() {
     // math namespace + compute function
     // Point struct
     // main function
-    assert!(names.contains(&"Calculator".to_string()), "missing Calculator: {names:?}");
+    assert!(
+        names.contains(&"Calculator".to_string()),
+        "missing Calculator: {names:?}"
+    );
     assert!(names.contains(&"add".to_string()), "missing add method");
     assert!(names.contains(&"compute".to_string()), "missing compute");
     assert!(names.contains(&"Point".to_string()), "missing Point struct");
@@ -1646,11 +1843,17 @@ fn test_cpp_index() {
 
     // ClassSpecifier → class kind
     let calc = all_nodes.iter().find(|n| n.name == "Calculator").unwrap();
-    assert_eq!(calc.kind, "class", "Calculator (class_specifier) should be class kind");
+    assert_eq!(
+        calc.kind, "class",
+        "Calculator (class_specifier) should be class kind"
+    );
 
     // StructSpecifier → class kind
     let point = all_nodes.iter().find(|n| n.name == "Point").unwrap();
-    assert_eq!(point.kind, "class", "Point (struct_specifier) should be class kind");
+    assert_eq!(
+        point.kind, "class",
+        "Point (struct_specifier) should be class kind"
+    );
 
     // Call edges — main calls c.add (field_expression call)
     let edges = get_all_edges(&store);

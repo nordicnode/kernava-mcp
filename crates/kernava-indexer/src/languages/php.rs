@@ -52,12 +52,17 @@ fn parse_use_declaration(node: &Node, source: &str, map: &mut ModuleMap) {
 fn parse_use_clause(node: &Node, source: &str, map: &mut ModuleMap) {
     // Find qualified_name child
     let mut cursor = node.walk();
-    let qname = node.children(&mut cursor).find(|c| c.kind() == "qualified_name");
-    let Some(qname) = qname else { return; };
+    let qname = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "qualified_name");
+    let Some(qname) = qname else {
+        return;
+    };
     let path = node_text(&qname, source);
 
     // Check for alias field
-    let alias = node.child_by_field_name("alias")
+    let alias = node
+        .child_by_field_name("alias")
         .map(|n| node_text(&n, source));
 
     let local_name = match alias {
@@ -90,28 +95,37 @@ mod tests {
     #[test]
     fn test_simple_use() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"<?php
+        parse_imports_code(
+            r#"<?php
 use Example\Math;
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("Math"), Some(&"Example\\Math".to_string()));
     }
 
     #[test]
     fn test_aliased_use() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"<?php
+        parse_imports_code(
+            r#"<?php
 use Example\Math as M;
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("M"), Some(&"Example\\Math".to_string()));
     }
 
     #[test]
     fn test_multiple_use() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"<?php
+        parse_imports_code(
+            r#"<?php
 use Example\Math;
 use Example\Util;
-"#, &mut map);
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("Math"), Some(&"Example\\Math".to_string()));
         assert_eq!(map.imports.get("Util"), Some(&"Example\\Util".to_string()));
     }

@@ -23,11 +23,17 @@ fn parse_include(node: &Node, source: &str, map: &mut ModuleMap) {
         Some(p) => node_text(&p, source),
         None => return,
     };
-    let path = path.trim_matches(|c| c == '<' || c == '>' || c == '"').to_string();
+    let path = path
+        .trim_matches(|c| c == '<' || c == '>' || c == '"')
+        .to_string();
     if path.is_empty() {
         return;
     }
-    let local = path.rsplit_once('.').map(|(base, _)| base).unwrap_or(&path).to_string();
+    let local = path
+        .rsplit_once('.')
+        .map(|(base, _)| base)
+        .unwrap_or(&path)
+        .to_string();
     let local = local.rsplit('/').next().unwrap_or(&local).to_string();
     map.imports.insert(local, path.clone());
     map.module_paths.push(path);
@@ -59,16 +65,22 @@ mod tests {
     #[test]
     fn test_local_include() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"#include "helper.h"
-"#, &mut map);
+        parse_imports_code(
+            r#"#include "helper.h"
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("helper"), Some(&"helper.h".to_string()));
     }
 
     #[test]
     fn test_path_include() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"#include "lib/thing.hpp"
-"#, &mut map);
+        parse_imports_code(
+            r#"#include "lib/thing.hpp"
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("thing"), Some(&"lib/thing.hpp".to_string()));
     }
 }

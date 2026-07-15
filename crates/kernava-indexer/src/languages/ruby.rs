@@ -28,7 +28,8 @@ pub fn parse_imports(root: &Node, source: &str, map: &mut ModuleMap) {
                                 // Strip quotes
                                 let path = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
                                 if !path.is_empty() {
-                                    let local = path.rsplit('/').next().unwrap_or(&path).to_string();
+                                    let local =
+                                        path.rsplit('/').next().unwrap_or(&path).to_string();
                                     map.imports.insert(local, path.clone());
                                     map.module_paths.push(path);
                                 }
@@ -60,24 +61,33 @@ mod tests {
     #[test]
     fn test_require() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"require 'json'
-"#, &mut map);
+        parse_imports_code(
+            r#"require 'json'
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("json"), Some(&"json".to_string()));
     }
 
     #[test]
     fn test_require_relative() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"require_relative 'helper'
-"#, &mut map);
+        parse_imports_code(
+            r#"require_relative 'helper'
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("helper"), Some(&"helper".to_string()));
     }
 
     #[test]
     fn test_path_require() {
         let mut map = ModuleMap::default();
-        parse_imports_code(r#"require 'lib/thing'
-"#, &mut map);
+        parse_imports_code(
+            r#"require 'lib/thing'
+"#,
+            &mut map,
+        );
         assert_eq!(map.imports.get("thing"), Some(&"lib/thing".to_string()));
     }
 }

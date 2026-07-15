@@ -304,12 +304,20 @@ mod tests {
 
         // Query with snake_case should match camelCase symbol
         let results = search_symbols(store.conn(), "handle_request", 10).unwrap();
-        assert_eq!(results.len(), 1, "snake_case query should match camelCase symbol");
+        assert_eq!(
+            results.len(),
+            1,
+            "snake_case query should match camelCase symbol"
+        );
         assert_eq!(results[0].name, "handleRequest");
 
         // Query with camelCase should also match
         let results = search_symbols(store.conn(), "handleRequest", 10).unwrap();
-        assert_eq!(results.len(), 1, "camelCase query should match camelCase symbol");
+        assert_eq!(
+            results.len(),
+            1,
+            "camelCase query should match camelCase symbol"
+        );
         assert_eq!(results[0].name, "handleRequest");
     }
 }

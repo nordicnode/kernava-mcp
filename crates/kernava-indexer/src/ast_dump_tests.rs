@@ -27,12 +27,22 @@ public class Calculator {
 interface Math { int compute(int x); }
 enum Color { RED, GREEN, BLUE }
 "#;
-    dump_and_assert(code, Language::Java, &[
-        "class_declaration", "interface_declaration", "enum_declaration",
-        "method_declaration", "constructor_declaration",
-        "import_declaration", "field_declaration",
-        "method_invocation", "modifiers",
-    ], "Java");
+    dump_and_assert(
+        code,
+        Language::Java,
+        &[
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "import_declaration",
+            "field_declaration",
+            "method_invocation",
+            "modifiers",
+        ],
+        "Java",
+    );
 }
 
 #[test]
@@ -51,12 +61,21 @@ namespace Example {
     public enum Color { Red, Green, Blue }
 }
 "#;
-    dump_and_assert(code, Language::CSharp, &[
-        "class_declaration", "interface_declaration", "enum_declaration",
-        "method_declaration", "constructor_declaration",
-        "using_directive", "namespace_declaration",
-        "invocation_expression",
-    ], "C#");
+    dump_and_assert(
+        code,
+        Language::CSharp,
+        &[
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "using_directive",
+            "namespace_declaration",
+            "invocation_expression",
+        ],
+        "C#",
+    );
 }
 
 #[test]
@@ -90,11 +109,21 @@ def free_function(a, b)
   a + b
 end
 "#;
-    dump_and_assert(code, Language::Ruby, &[
-        "class", "module", "method", "method_parameters",
-        "call", "argument_list",
-        "identifier", "instance_variable",
-    ], "Ruby");
+    dump_and_assert(
+        code,
+        Language::Ruby,
+        &[
+            "class",
+            "module",
+            "method",
+            "method_parameters",
+            "call",
+            "argument_list",
+            "identifier",
+            "instance_variable",
+        ],
+        "Ruby",
+    );
 }
 
 #[test]
@@ -115,11 +144,18 @@ interface Math { public function compute($x); }
 
 function free_function($a, $b) { return $a + $b; }
 "#;
-    dump_and_assert(code, Language::Php, &[
-        "class_declaration", "interface_declaration",
-        "method_declaration", "function_definition",
-        "namespace_use_declaration",
-    ], "PHP");
+    dump_and_assert(
+        code,
+        Language::Php,
+        &[
+            "class_declaration",
+            "interface_declaration",
+            "method_declaration",
+            "function_definition",
+            "namespace_use_declaration",
+        ],
+        "PHP",
+    );
 }
 
 #[test]
@@ -132,10 +168,18 @@ static int helper(int x) { return x * 2; }
 
 int main() { int r = add(1, 2); printf("%d\n", r); return 0; }
 "#;
-    dump_and_assert(code, Language::C, &[
-        "function_definition", "declaration", "call_expression",
-        "preproc_include", "identifier",
-    ], "C");
+    dump_and_assert(
+        code,
+        Language::C,
+        &[
+            "function_definition",
+            "declaration",
+            "call_expression",
+            "preproc_include",
+            "identifier",
+        ],
+        "C",
+    );
 }
 
 #[test]
@@ -157,10 +201,19 @@ namespace math {
 
 int main() { Calculator c(1); int r = c.add(1, 2); return 0; }
 "#;
-    dump_and_assert(code, Language::Cpp, &[
-        "class_specifier", "function_definition", "namespace_definition",
-        "call_expression", "field_declaration", "field_expression",
-    ], "C++");
+    dump_and_assert(
+        code,
+        Language::Cpp,
+        &[
+            "class_specifier",
+            "function_definition",
+            "namespace_definition",
+            "call_expression",
+            "field_declaration",
+            "field_expression",
+        ],
+        "C++",
+    );
 }
 
 #[test]
@@ -177,5 +230,8 @@ class Calculator {
 "#;
     let tree = parser::parse(code, Language::Php).unwrap();
     let sexp = tree.root_node().to_sexp();
-    assert!(sexp.contains("member_call_expression"), "no member_call_expression: {sexp}");
+    assert!(
+        sexp.contains("member_call_expression"),
+        "no member_call_expression: {sexp}"
+    );
 }

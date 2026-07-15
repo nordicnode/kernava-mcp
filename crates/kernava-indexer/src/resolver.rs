@@ -57,6 +57,12 @@ pub struct FunctionRegistry {
     pub symbols: Vec<SymbolDef>,
 }
 
+impl Default for FunctionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FunctionRegistry {
     pub fn new() -> Self {
         Self {
@@ -248,7 +254,7 @@ fn try_import_map(
                 let suffix_str = format!(".{}", suffix);
                 let mut found: Option<String> = None;
                 let mut count = 0;
-                for (qn, _) in &registry.by_qualified {
+                for qn in registry.by_qualified.keys() {
                     if qn.starts_with(&prefix_str) && qn.ends_with(&suffix_str) {
                         found = Some(qn.clone());
                         count += 1;

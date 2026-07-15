@@ -152,9 +152,10 @@ fn walk(
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
                             // Python methods are function_definition inside class block
-                            if member.kind() == "function_definition" {
-                                walk_method(&member, source, file_path, &qn, lang, result);
-                            } else if member.kind() == "decorated_definition" {
+                            if matches!(
+                                member.kind(),
+                                "function_definition" | "decorated_definition"
+                            ) {
                                 walk_method(&member, source, file_path, &qn, lang, result);
                             }
                         }
@@ -185,7 +186,7 @@ fn walk(
             // Methods belong to the implementing type, so prefer `type` over `trait`.
             let impl_type = node
                 .child_by_field_name("type")
- .or_else(|| node.child_by_field_name("trait"))
+                .or_else(|| node.child_by_field_name("trait"))
                 .map(|n| node_text(&n, source))
                 .unwrap_or_default();
             // Qualify with file_path so method qnames match the struct's qname
@@ -833,7 +834,14 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
@@ -865,7 +873,14 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "statement_block" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
@@ -897,7 +912,14 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
@@ -929,7 +951,9 @@ fn walk_method(
         return;
     }
     // Java: method_declaration inside class_body = method
-    if lang.is_java() && (node.kind() == "method_declaration" || node.kind() == "constructor_declaration") {
+    if lang.is_java()
+        && (node.kind() == "method_declaration" || node.kind() == "constructor_declaration")
+    {
         if let Some(name) = get_child_text(node, "name", source) {
             let qualified_name = format!("{}.{}", class_qn, name);
             let signature = get_signature(node, source);
@@ -953,14 +977,23 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
         return;
     }
     // C#: method_declaration inside class body = method
-    if lang.is_csharp() && (node.kind() == "method_declaration" || node.kind() == "constructor_declaration") {
+    if lang.is_csharp()
+        && (node.kind() == "method_declaration" || node.kind() == "constructor_declaration")
+    {
         if let Some(name) = get_child_text(node, "name", source) {
             let qualified_name = format!("{}.{}", class_qn, name);
             let signature = get_signature(node, source);
@@ -984,7 +1017,14 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
@@ -1012,7 +1052,14 @@ fn walk_method(
 
             // Walk the body field only — avoid walking parameters/name
             if let Some(body) = node.child_by_field_name("body") {
-                walk(&body, source, file_path, Some(&qualified_name), lang, result);
+                walk(
+                    &body,
+                    source,
+                    file_path,
+                    Some(&qualified_name),
+                    lang,
+                    result,
+                );
             }
         }
         return;
@@ -1042,7 +1089,14 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "compound_statement" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
@@ -1074,11 +1128,17 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "compound_statement" {
-                    walk(&child, source, file_path, Some(&qualified_name), lang, result);
+                    walk(
+                        &child,
+                        source,
+                        file_path,
+                        Some(&qualified_name),
+                        lang,
+                        result,
+                    );
                 }
             }
         }
-        return;
     }
 }
 
@@ -1213,7 +1273,14 @@ fn extract_variable(
                     let qualified_name = make_qualified_name(file_path, &name, parent);
                     let mut vc = val_child.walk();
                     for vc_child in val_child.children(&mut vc) {
-                        walk(&vc_child, source, file_path, Some(&qualified_name), lang, result);
+                        walk(
+                            &vc_child,
+                            source,
+                            file_path,
+                            Some(&qualified_name),
+                            lang,
+                            result,
+                        );
                     }
                 } else {
                     walk(&val_child, source, file_path, parent, lang, result);
@@ -1280,7 +1347,12 @@ fn extract_callee_name(node: &Node, source: &str, lang: Language) -> Option<Stri
     // PHP uses `function` or `member` field; Java uses `name`+`object` fields; TS/JS uses child(0)
     let function_node = if matches!(
         lang,
-        Language::Python | Language::Rust | Language::Go | Language::C | Language::Cpp | Language::CSharp
+        Language::Python
+            | Language::Rust
+            | Language::Go
+            | Language::C
+            | Language::Cpp
+            | Language::CSharp
     ) {
         node.child_by_field_name("function")?
     } else if lang.is_ruby() {
@@ -1294,7 +1366,11 @@ fn extract_callee_name(node: &Node, source: &str, lang: Language) -> Option<Stri
         let name = node.child_by_field_name("name")?;
         let obj = node.child_by_field_name("object");
         return match obj {
-            Some(o) => Some(format!("{}.{}", node_text(&o, source), node_text(&name, source))),
+            Some(o) => Some(format!(
+                "{}.{}",
+                node_text(&o, source),
+                node_text(&name, source)
+            )),
             None => Some(node_text(&name, source)),
         };
     } else {
@@ -1304,8 +1380,13 @@ fn extract_callee_name(node: &Node, source: &str, lang: Language) -> Option<Stri
 
     match function_node.kind() {
         "identifier" | "name" => Some(node_text(&function_node, source)),
-        "member_expression" | "attribute" | "field_expression" | "scoped_identifier"
-        | "selector_expression" | "field_access" | "member_access_expression"
+        "member_expression"
+        | "attribute"
+        | "field_expression"
+        | "scoped_identifier"
+        | "selector_expression"
+        | "field_access"
+        | "member_access_expression"
         | "qualified_name" => {
             let full = node_text(&function_node, source);
             Some(full)
@@ -1315,7 +1396,7 @@ fn extract_callee_name(node: &Node, source: &str, lang: Language) -> Option<Stri
 }
 
 /// Get the text of a named child by field name.
-fn get_child_text<'a>(node: &Node, field: &str, source: &'a str) -> Option<String> {
+fn get_child_text(node: &Node, field: &str, source: &str) -> Option<String> {
     let child = node.child_by_field_name(field)?;
     Some(node_text(&child, source))
 }
@@ -1370,7 +1451,10 @@ fn is_exported(node: &Node, source: &str) -> bool {
 
 /// Go: exported if name starts with uppercase letter.
 fn is_go_exported(name: &str) -> bool {
-    name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+    name.chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
 }
 /// Count cyclomatic complexity: if, else if, for, while, switch case, &&, ||, ternary.
 fn count_complexity(node: &Node, source: &str) -> u32 {
@@ -1455,7 +1539,9 @@ fn extract_go_receiver_type(node: &Node, source: &str) -> String {
     let pd = receiver
         .children(&mut cursor)
         .find(|ch| ch.kind() == "parameter_declaration");
-    let Some(pd) = pd else { return String::new(); };
+    let Some(pd) = pd else {
+        return String::new();
+    };
 
     // type field gives the type node; for pointer receivers it's pointer_type wrapping type_identifier
     pd.child_by_field_name("type")
@@ -1548,7 +1634,12 @@ fn extract_imports(root: &Node, source: &str, lang: Language, map: &mut ModuleMa
     }
     if matches!(
         lang,
-        Language::Java | Language::CSharp | Language::Ruby | Language::Php | Language::C | Language::Cpp
+        Language::Java
+            | Language::CSharp
+            | Language::Ruby
+            | Language::Php
+            | Language::C
+            | Language::Cpp
     ) {
         match lang {
             Language::Java => crate::languages::java::parse_imports(root, source, map),
@@ -1811,13 +1902,22 @@ fn main() {
         // ── Symbols ──
         // add (Function), Calculator (Class), Calculator.new (Method),
         // Calculator.compute (Method), Op (Enum), main (Function)
-        assert_eq!(result.symbols.len(), 6, "expected 6 symbols, got {:?}", result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>());
+        assert_eq!(
+            result.symbols.len(),
+            6,
+            "expected 6 symbols, got {:?}",
+            result.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
 
         let add = result.symbols.iter().find(|s| s.name == "add").unwrap();
         assert_eq!(add.kind, SymbolKind::Function);
         assert_eq!(add.qualified_name, "test.rs.add");
 
-        let calc = result.symbols.iter().find(|s| s.name == "Calculator").unwrap();
+        let calc = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Calculator")
+            .unwrap();
         assert_eq!(calc.kind, SymbolKind::Class);
         assert_eq!(calc.qualified_name, "test.rs.Calculator");
 
@@ -1831,7 +1931,11 @@ fn main() {
         // complexity: base(1) + if(1) + match is handled by match_arm recursion
         // if_expression=1, match_arm 0=>0 and _ => -x = 2 match arms
         // Total: 1 + 1 + 2 = 4
-        assert!(compute.complexity >= 3, "compute complexity={}, expected >=3", compute.complexity);
+        assert!(
+            compute.complexity >= 3,
+            "compute complexity={}, expected >=3",
+            compute.complexity
+        );
 
         let op = result.symbols.iter().find(|s| s.name == "Op").unwrap();
         assert_eq!(op.kind, SymbolKind::Enum);
@@ -1841,17 +1945,33 @@ fn main() {
 
         // ── Calls ──
         // Calculator::new(), calc.compute(42), add(1, 2)
-        assert_eq!(result.calls.len(), 3, "expected 3 calls, got {:?}", result.calls);
+        assert_eq!(
+            result.calls.len(),
+            3,
+            "expected 3 calls, got {:?}",
+            result.calls
+        );
 
         // Check callee names
         let callees: Vec<&str> = result.calls.iter().map(|c| c.callee.as_str()).collect();
         assert!(callees.contains(&"add"), "no call to 'add'");
-        assert!(callees.iter().any(|c| c.contains("compute")), "no call to compute: {:?}", callees);
-        assert!(callees.iter().any(|c| c.contains("new")), "no call to new: {:?}", callees);
+        assert!(
+            callees.iter().any(|c| c.contains("compute")),
+            "no call to compute: {:?}",
+            callees
+        );
+        assert!(
+            callees.iter().any(|c| c.contains("new")),
+            "no call to new: {:?}",
+            callees
+        );
 
         // ── Imports ──
         assert_eq!(result.module_map.imports.len(), 1);
-        assert_eq!(result.module_map.imports.get("HashMap"), Some(&"std::collections::HashMap".to_string()));
+        assert_eq!(
+            result.module_map.imports.get("HashMap"),
+            Some(&"std::collections::HashMap".to_string())
+        );
     }
 
     #[test]
@@ -1862,10 +1982,17 @@ fn private_fn() {}
 struct Private;
 "#;
         let result = extract_rust(src);
-        let pf = result.symbols.iter().find(|s| s.name == "private_fn").unwrap();
+        let pf = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "private_fn")
+            .unwrap();
         assert!(!pf.is_exported, "non-pub fn should be is_exported=false");
         let st = result.symbols.iter().find(|s| s.name == "Private").unwrap();
-        assert!(!st.is_exported, "non-pub struct should be is_exported=false");
+        assert!(
+            !st.is_exported,
+            "non-pub struct should be is_exported=false"
+        );
     }
 
     #[test]
@@ -1876,9 +2003,20 @@ pub(crate) fn internal_fn() {}
 pub fn public_fn() {}
 "#;
         let result = extract_rust(src);
-        let internal = result.symbols.iter().find(|s| s.name == "internal_fn").unwrap();
-        assert!(!internal.is_exported, "pub(crate) fn should be is_exported=false");
-        let public = result.symbols.iter().find(|s| s.name == "public_fn").unwrap();
+        let internal = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "internal_fn")
+            .unwrap();
+        assert!(
+            !internal.is_exported,
+            "pub(crate) fn should be is_exported=false"
+        );
+        let public = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "public_fn")
+            .unwrap();
         assert!(public.is_exported, "pub fn should be is_exported=true");
     }
 }

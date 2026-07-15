@@ -2,8 +2,8 @@
 
 mod cache;
 mod impact;
-pub mod model;
 mod louvain;
+pub mod model;
 mod traverse;
 
 pub use cache::GraphCache;
