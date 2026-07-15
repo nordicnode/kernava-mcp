@@ -89,7 +89,15 @@ pub fn extract(source: &str, lang: Language, file_path: &str) -> Result<Extracti
     let mut work: VecDeque<(Node<'_>, Option<String>)> = VecDeque::new();
     work.push_back((root, None));
     while let Some((node, parent_symbol)) = work.pop_front() {
-        walk_one(&node, source, file_path, &parent_symbol, lang, &mut result, &mut work);
+        walk_one(
+            &node,
+            source,
+            file_path,
+            &parent_symbol,
+            lang,
+            &mut result,
+            &mut work,
+        );
     }
 
     Ok(result)
@@ -248,7 +256,9 @@ fn walk_one<'t>(
         }
         // ── Go: free functions ──
         "function_declaration" if lang.is_go() => {
-            if let Some(mut sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
+            if let Some(mut sym) =
+                extract_function(node, source, file_path, parent_symbol.as_deref())
+            {
                 sym.is_exported = is_go_exported(&sym.name);
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
@@ -323,7 +333,8 @@ fn walk_one<'t>(
         }
         // ── Java: interface declaration ──
         "interface_declaration" if lang.is_java() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref())
+            {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // Interface body has method signatures (no body)
@@ -378,7 +389,8 @@ fn walk_one<'t>(
         }
         // ── C#: interface declaration ──
         "interface_declaration" if lang.is_csharp() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref())
+            {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 if let Some(body) = node.child_by_field_name("body") {
@@ -502,7 +514,8 @@ fn walk_one<'t>(
         }
         // ── PHP: interface declaration ──
         "interface_declaration" if lang.is_php() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref())
+            {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
@@ -680,7 +693,8 @@ fn walk_one<'t>(
         }
         // ── TS-only: interface/enum/type_alias ──
         "interface_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref())
+            {
                 result.symbols.push(sym);
                 return;
             }
@@ -692,7 +706,8 @@ fn walk_one<'t>(
             }
         }
         "type_alias_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_type_alias(node, source, file_path, parent_symbol.as_deref()) {
+            if let Some(sym) = extract_type_alias(node, source, file_path, parent_symbol.as_deref())
+            {
                 result.symbols.push(sym);
                 return;
             }
@@ -707,7 +722,15 @@ fn walk_one<'t>(
         }
         // Variable declarations: `const foo = () => {}` or `const foo = function() {}`
         "lexical_declaration" | "variable_declaration" if lang.is_ts_family() => {
-            extract_variable(node, source, file_path, parent_symbol.as_deref(), lang, result, work);
+            extract_variable(
+                node,
+                source,
+                file_path,
+                parent_symbol.as_deref(),
+                lang,
+                result,
+                work,
+            );
             return;
         }
         // ── TS/JS: call expressions ──

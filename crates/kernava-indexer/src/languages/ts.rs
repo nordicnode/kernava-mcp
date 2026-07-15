@@ -170,7 +170,9 @@ pub fn parse_require_calls(root: &tree_sitter::Node, source: &str, map: &mut Mod
                                 {
                                     let local = node_text(&prop, source);
                                     map.imports.insert(local, module_path.clone());
-                                } else if prop.kind() == "pair_pattern" || prop.kind() == "pair_property" {
+                                } else if prop.kind() == "pair_pattern"
+                                    || prop.kind() == "pair_property"
+                                {
                                     if let Some(value) = prop.child_by_field_name("value") {
                                         if value.kind() == "identifier" {
                                             let local = node_text(&value, source);

@@ -797,7 +797,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         // lib.ts: exports greet; main.ts imports + calls greet.
-        fs::write(dir.join("lib.ts"), "export function greet() { return 1; }\n").unwrap();
+        fs::write(
+            dir.join("lib.ts"),
+            "export function greet() { return 1; }\n",
+        )
+        .unwrap();
         fs::write(
             dir.join("main.ts"),
             "import { greet } from './lib';\nfunction main() { greet(); }\n",
@@ -813,8 +817,7 @@ mod tests {
                 ignore: vec![],
                 follow_symlinks: false,
             };
-            let r =
-                index_full_with_config(&mut store, &dir, &config).unwrap();
+            let r = index_full_with_config(&mut store, &dir, &config).unwrap();
             assert_eq!(r.len(), 2, "both files should index on run 1");
             let edges = store.get_all_edges().unwrap();
             let resolved = edges.iter().filter(|e| e.target_id.is_some()).count();
@@ -827,15 +830,18 @@ mod tests {
         // Grow lib.ts past max_file_size so it gets skipped on run 2.
         // main.ts unchanged → its edge into lib.greet must STAY resolved.
         let big = "x".repeat(2048);
-        fs::write(dir.join("lib.ts"), format!("export function greet() {{ return 1; }}\n// {big}")).unwrap();
+        fs::write(
+            dir.join("lib.ts"),
+            format!("export function greet() {{ return 1; }}\n// {big}"),
+        )
+        .unwrap();
         {
             let config = IndexerConfig {
                 max_file_size: 1024, // lib.ts now exceeds → skipped
                 ignore: vec![],
                 follow_symlinks: false,
             };
-            let r =
-                index_full_with_config(&mut store, &dir, &config).unwrap();
+            let r = index_full_with_config(&mut store, &dir, &config).unwrap();
             // lib.ts is skipped; main.ts re-indexed.
             assert_eq!(r.len(), 1, "lib.ts should be skipped on run 2");
 
