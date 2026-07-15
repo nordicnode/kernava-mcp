@@ -768,11 +768,13 @@ async fn test_python_import_server() {
     let caller = store.get_node(incoming[0].source_id).unwrap().unwrap();
     assert_eq!(caller.name, "main", "caller of add should be main");
 
-    // get_callees: graph forward adjacency for "main" → 3 callees
+    // get_callees: graph forward adjacency for "main" → 4 resolved callees
+    // (add, multiply, helper from .math/.util; create from .calc via class-qualified ImportMap)
+    // main→compute is UNRESOLVED (calc is a local variable, filtered by builder).
     let main_qname = format!("{}/main.py.main", fixture_root.to_string_lossy());
     let main_node = graph.get_node(&main_qname).expect("main should be in graph");
     let callees = graph.forward.get(&main_node.id).expect("main should have callees");
-    assert!(callees.len() >= 3, "main should call >=3 functions, got {}", callees.len());
+    assert_eq!(callees.len(), 4, "main should call 4 resolved functions, got {}", callees.len());
 
     let callee_names: Vec<String> = callees
         .iter()
@@ -783,7 +785,7 @@ async fn test_python_import_server() {
                 .unwrap_or_default()
         })
         .collect();
-    for expected in &["add", "multiply", "helper"] {
+    for expected in &["add", "multiply", "helper", "create"] {
         assert!(callee_names.iter().any(|n| n == expected), "main should call {expected}, got: {callee_names:?}");
     }
 

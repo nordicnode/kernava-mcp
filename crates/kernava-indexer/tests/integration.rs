@@ -1062,8 +1062,11 @@ fn test_python_import_index() {
     );
 
     // Verify call edges:
-    // main→add, main→multiply, main→helper (ImportMap)
-    // calc.create→Calculator (SameFile, Calculator() constructor)
+    // main→add, main→multiply, main→helper, main→create (ImportMap)
+    //   — create resolves via Case B class-qualified: from .calc import Calculator,
+    //     then Calculator.create() resolves to calc.py's Calculator.create method.
+    // calc.create→Calculator (SameFile, Calculator() constructor in create body)
+    // main→compute UNRESOLVED — calc is a local variable, not an import alias.
     let edges = get_all_edges(&store);
     let calls: Vec<_> = edges.iter().filter(|(_, _, et, _)| et == "calls").collect();
     let resolved = calls.iter().filter(|(_, tid, _, _)| tid.is_some()).count();
@@ -1076,11 +1079,9 @@ fn test_python_import_index() {
     let import_map_count = call_strategies.iter().filter(|s| s.as_str() == "ImportMap").count();
     let same_file_count = call_strategies.iter().filter(|s| s.as_str() == "SameFile").count();
 
-    // 3+ calls resolve via ImportMap: add, multiply, helper, plus class-qualified
-    // methods (Calculator.compute etc.) now resolve via Case B class-qualified fallback.
-    assert!(import_map_count >= 3, "expected >=3 ImportMap, got {import_map_count}");
-    assert_eq!(same_file_count, 1, "1 call resolves via SameFile (Calculator() constructor in create)");
-    assert!(resolved >= 4, "expected >=4 resolved call edges, got {resolved}");
+    assert_eq!(import_map_count, 4, "4 calls via ImportMap: add, multiply, helper, create");
+    assert_eq!(same_file_count, 1, "1 call via SameFile: Calculator() constructor in create");
+    assert_eq!(resolved, 5, "5 total resolved: 4 ImportMap + 1 SameFile");
 
     // process is never called (dead code)
     let process_called = calls
