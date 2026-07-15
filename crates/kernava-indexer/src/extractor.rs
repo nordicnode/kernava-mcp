@@ -1433,10 +1433,12 @@ fn get_child_text(node: &Node, field: &str, source: &str) -> Option<String> {
     Some(node_text(&child, source))
 }
 
-/// Construct a qualified name: `file_path.symbol_name` or `file_path.owner.name`.
+/// Construct a qualified name: `file_path.symbol_name` or `parent.name`.
+/// When `parent` is present it already includes the file_path prefix (it's the
+/// enclosing symbol's qualified name), so we just append the child name.
 fn make_qualified_name(file_path: &str, name: &str, parent: Option<&str>) -> String {
     match parent {
-        Some(p) => format!("{}.{}.{}", file_path, p, name),
+        Some(p) => format!("{}.{}", p, name),
         None => format!("{}.{}", file_path, name),
     }
 }

@@ -242,7 +242,8 @@ fn default_code_limit() -> u32 {
 pub struct GraphTraversalParams {
     /// Qualified name of the source symbol.
     pub source: String,
-    /// Maximum traversal depth. Default 20 for call_path, 10 for impact_radius.
+    /// Maximum traversal depth for get_callers/get_callees (1 = direct only).
+    /// Also used as max hops for get_call_path. Default 20.
     #[serde(default = "default_depth")]
     pub max_depth: u32,
 }
@@ -349,9 +350,13 @@ impl KernavaHandler {
         Parameters(params): Parameters<SearchSymbolsParams>,
     ) -> Result<String, String> {
         let _span = info_span!("mcp_tool", name = "search_symbols").entered();
+        let query = params.query.trim();
+        if query.is_empty() {
+            return Ok("Query is empty. Provide a symbol name or fragment to search.".into());
+        }
         let store = self.state.store.lock().map_err(|e| e.to_string())?;
         let nodes =
-            kernava_store::fts5::search_symbols(store.conn(), &params.query, params.limit as i64)
+            kernava_store::fts5::search_symbols(store.conn(), query, params.limit as i64)
                 .map_err(|e| e.to_string())?;
         if nodes.is_empty() {
             return Ok("No symbols found.".into());
@@ -400,9 +405,15 @@ impl KernavaHandler {
                     .get(&n.id)
                     .map(|v| v.len())
                     .unwrap_or(0);
+                let store = self.state.store.lock().map_err(|e| e.to_string())?;
+                let file_path = store
+                    .get_file_path(n.file_id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| format!("file_id:{}", n.file_id));
                 Ok(format!(
-                    "Name: {}\nKind: {}\nQualified: {}\nFile ID: {}\nLines: {}-{}\nSignature: {}\nReturn type: {}\nExported: {}\nComplexity: {}\nCallers: {}\nCallees: {}",
-                    n.name, n.kind, n.qualified_name, n.file_id,
+                    "Name: {}\nKind: {}\nQualified: {}\nFile: {}\nLines: {}-{}\nSignature: {}\nReturn type: {}\nExported: {}\nComplexity: {}\nCallers: {}\nCallees: {}",
+                    n.name, n.kind, n.qualified_name, file_path,
                     n.line_start, n.line_end,
                     n.signature.unwrap_or_default(),
                     n.return_type.unwrap_or_default(),
@@ -684,10 +695,11 @@ impl KernavaHandler {
 
     // ── Phase 4 Graph Tools ─────────────────────────────────
 
-    /// Get all direct callers of a symbol (reverse adjacency) with call-site locations.
+    /// Get all direct and transitive callers of a symbol up to `max_depth` hops.
+    /// Depth 1 = direct callers only (default). Depth N includes callers-of-callers up to N hops.
     #[tool(
         name = "get_callers",
-        description = "Get all direct callers of a symbol — reverse adjacency with call-site file, line, and confidence."
+        description = "Get all callers of a symbol — reverse adjacency with call-site file, line, and confidence. Supports multi-hop traversal via max_depth (default 1 = direct callers only)."
     )]
     fn get_callers(
         &self,
@@ -706,30 +718,68 @@ impl KernavaHandler {
             None => return Ok(format!("Symbol '{}' not found.", params.source)),
         };
 
-        let edges = store
-            .get_incoming_edges(node.id)
-            .map_err(|e| e.to_string())?;
-        let callers: Vec<_> = edges.iter().filter(|e| e.edge_type == "calls").collect();
-        if callers.is_empty() {
+        let max_depth = if params.max_depth == 0 { 1 } else { params.max_depth as usize };
+
+        // BFS over reverse adjacency in the graph cache.
+        use std::collections::HashSet;
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        visited.insert(node.id);
+        let mut results: Vec<(NodeId, usize, f64)> = Vec::new();
+        let mut frontier: Vec<(NodeId, usize, f64)> = vec![(node.id, 0, 1.0)];
+        while let Some((nid, depth, conf)) = frontier.pop() {
+            if depth >= max_depth {
+                continue;
+            }
+            for (caller_id, edge_conf) in self.state.graph.get_callers(nid) {
+                if visited.contains(&caller_id) {
+                    continue;
+                }
+                visited.insert(caller_id);
+                let combined = conf * edge_conf;
+                results.push((caller_id, depth + 1, combined));
+                frontier.push((caller_id, depth + 1, combined));
+            }
+        }
+
+        if results.is_empty() {
             return Ok(format!("No callers found for '{}'.", params.source));
         }
-        let count = callers.len();
+        results.sort_by_key(|r| r.1);
+        let count = results.len();
         let mut lines = Vec::with_capacity(count);
-        for e in &callers {
-            let caller = store.get_node(e.source_id).map_err(|e| e.to_string())?;
-            let caller_name = caller
-                .as_ref()
-                .map(|c| c.qualified_name.clone())
-                .unwrap_or_else(|| format!("node#{}", e.source_id));
-            let file = e
-                .file_id
-                .and_then(|fid| store.get_file_path(fid).ok().flatten())
-                .unwrap_or_default();
-            let line = e.line.unwrap_or(0);
-            lines.push(format!(
-                "  {caller_name} → {qname} at {file}:{line} (confidence {:.2})",
-                e.confidence
-            ));
+        for (caller_id, depth, conf) in &results {
+            let caller_name = self
+                .state
+                .graph
+                .nodes
+                .get(caller_id)
+                .map(|n| n.qualified_name.clone())
+                .unwrap_or_else(|| format!("node#{caller_id}"));
+            if *depth == 1 {
+                // Direct caller — look up the call-site edge for file/line.
+                let edges = store
+                    .get_incoming_edges(node.id)
+                    .map_err(|e| e.to_string())?;
+                let edge = edges
+                    .iter()
+                    .filter(|e| e.edge_type == "calls" && e.source_id == *caller_id)
+                    .next();
+                let file = edge
+                    .and_then(|e| {
+                        e.file_id.and_then(|fid| store.get_file_path(fid).ok().flatten())
+                    })
+                    .unwrap_or_default();
+                let line = edge.and_then(|e| e.line).unwrap_or(0);
+                lines.push(format!(
+                    "  {caller_name} → {qname} at {file}:{line} (confidence {:.2})",
+                    conf
+                ));
+            } else {
+                lines.push(format!(
+                    "  {caller_name} → (depth {depth}, confidence {:.2})",
+                    conf
+                ));
+            }
         }
         Ok(format!(
             "Found {count} callers of '{}':\n{}",
@@ -738,10 +788,11 @@ impl KernavaHandler {
         ))
     }
 
-    /// Get all direct callees of a symbol (forward adjacency) with call-site locations.
+    /// Get all direct and transitive callees of a symbol up to `max_depth` hops.
+    /// Depth 1 = direct callees only (default). Depth N includes callees-of-callees up to N hops.
     #[tool(
         name = "get_callees",
-        description = "Get all direct callees of a symbol — forward adjacency with call-site file, line, and confidence."
+        description = "Get all callees of a symbol — forward adjacency with call-site file, line, and confidence. Supports multi-hop traversal via max_depth (default 1 = direct callees only)."
     )]
     fn get_callees(
         &self,
@@ -760,35 +811,65 @@ impl KernavaHandler {
             None => return Ok(format!("Symbol '{}' not found.", params.source)),
         };
 
-        let edges = store
-            .get_outgoing_edges(node.id)
-            .map_err(|e| e.to_string())?;
-        let callees: Vec<_> = edges.iter().filter(|e| e.edge_type == "calls").collect();
-        if callees.is_empty() {
+        let max_depth = if params.max_depth == 0 { 1 } else { params.max_depth as usize };
+
+        // BFS over forward adjacency in the graph cache.
+        use std::collections::HashSet;
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        visited.insert(node.id);
+        let mut results: Vec<(NodeId, usize, f64)> = Vec::new();
+        let mut frontier: Vec<(NodeId, usize, f64)> = vec![(node.id, 0, 1.0)];
+        while let Some((nid, depth, conf)) = frontier.pop() {
+            if depth >= max_depth {
+                continue;
+            }
+            for (callee_id, edge_conf) in self.state.graph.get_callees(nid) {
+                if visited.contains(&callee_id) {
+                    continue;
+                }
+                visited.insert(callee_id);
+                let combined = conf * edge_conf;
+                results.push((callee_id, depth + 1, combined));
+                frontier.push((callee_id, depth + 1, combined));
+            }
+        }
+
+        if results.is_empty() {
             return Ok(format!("No callees found for '{}'.", params.source));
         }
-        let count = callees.len();
+        results.sort_by_key(|r| r.1);
+        let count = results.len();
         let mut lines = Vec::with_capacity(count);
-        for e in &callees {
-            let callee_name = match e.target_id {
-                Some(tid) => {
-                    let callee = store.get_node(tid).map_err(|e| e.to_string())?;
-                    callee
-                        .as_ref()
-                        .map(|c| c.qualified_name.clone())
-                        .unwrap_or_else(|| format!("node#{tid}"))
-                }
-                None => "(unresolved)".to_string(),
+        for (callee_id, depth, conf) in &results {
+            let callee_name = match self.state.graph.nodes.get(callee_id) {
+                Some(n) => n.qualified_name.clone(),
+                None => format!("node#{callee_id}"),
             };
-            let file = e
-                .file_id
-                .and_then(|fid| store.get_file_path(fid).ok().flatten())
-                .unwrap_or_default();
-            let line = e.line.unwrap_or(0);
-            lines.push(format!(
-                "  {qname} → {callee_name} at {file}:{line} (confidence {:.2})",
-                e.confidence
-            ));
+            if *depth == 1 {
+                // Direct callee — look up the call-site edge for target resolution.
+                let edges = store
+                    .get_outgoing_edges(node.id)
+                    .map_err(|e| e.to_string())?;
+                let edge = edges
+                    .iter()
+                    .filter(|e| e.edge_type == "calls" && e.target_id == Some(*callee_id))
+                    .next();
+                let file = edge
+                    .and_then(|e| {
+                        e.file_id.and_then(|fid| store.get_file_path(fid).ok().flatten())
+                    })
+                    .unwrap_or_default();
+                let line = edge.and_then(|e| e.line).unwrap_or(0);
+                lines.push(format!(
+                    "  {qname} → {callee_name} at {file}:{line} (confidence {:.2})",
+                    conf
+                ));
+            } else {
+                lines.push(format!(
+                    "  → {callee_name} (depth {depth}, confidence {:.2})",
+                    conf
+                ));
+            }
         }
         Ok(format!(
             "Found {count} callees of '{}':\n{}",
@@ -800,7 +881,7 @@ impl KernavaHandler {
     /// Find the shortest call path from source to target via BFS over call edges.
     #[tool(
         name = "get_call_path",
-        description = "Find the shortest call path from source to target via BFS over call edges. Returns the ordered path with per-hop confidence, or 'no path' if unreachable."
+        description = "Find the shortest call path from source to target via BFS over resolved call edges. Only calls that were resolved at index time are traversed — calls to external libraries, stdlib, or unresolved methods are not included. Returns the ordered path with per-hop confidence, or 'no path' if unreachable."
     )]
     fn get_call_path(
         &self,
@@ -918,7 +999,7 @@ impl KernavaHandler {
     /// Detect dead code: symbols with zero incoming call edges, excluding entry points.
     #[tool(
         name = "detect_dead_code",
-        description = "Detect dead code: functions with zero incoming call edges, excluding exported symbols and known entry points (main, test functions)."
+        description = "Detect dead code: functions with zero incoming call edges, excluding exported symbols, known entry points (main, test functions), and trait method implementations (e.g. Default::default) that are called via trait resolution the call graph cannot track."
     )]
     fn detect_dead_code(&self) -> Result<String, String> {
         let _span = info_span!("mcp_tool", name = "detect_dead_code").entered();
@@ -944,6 +1025,10 @@ impl KernavaHandler {
                     && !n.name.starts_with("test_")
                     && !n.name.ends_with("_test")
                     && !n.name.starts_with("Test")
+                    // Default trait impls (Default::default) are called via trait
+                    // resolution which the call graph can't track. Skip to avoid
+                    // false positives — these are always reachable at runtime.
+                    && n.name != "default"
             })
             .map(|entry| entry.value().clone())
             .collect();
@@ -1071,9 +1156,15 @@ impl KernavaHandler {
         dir_lines.sort();
 
         // 3. Entry points: exported symbols + functions named "main"
+        let entry_count = all_nodes
+            .iter()
+            .filter(|n| n.is_exported || n.name == "main")
+            .count();
+        const MAX_ENTRY_DISPLAY: usize = 20;
         let entry_points: Vec<String> = all_nodes
             .iter()
             .filter(|n| n.is_exported || n.name == "main")
+            .take(MAX_ENTRY_DISPLAY)
             .map(|n| {
                 format!(
                     "  {} ({}) at line {}",
@@ -1106,18 +1197,28 @@ impl KernavaHandler {
         let comm_summary = if communities.is_empty() {
             "  (none — graph empty or no edges)".into()
         } else {
+            let multi = communities.iter().filter(|c| c.members.len() >= 2).count();
+            let singletons = communities.len() - multi;
             format!(
-                "  {} communities (largest: {} members)",
+                "  {} communities ({} multi-member, {} singletons, largest: {} members)",
                 communities.len(),
+                multi,
+                singletons,
                 communities[0].members.len()
             )
+        };
+
+        let entry_truncated = if entry_count > MAX_ENTRY_DISPLAY {
+            format!(" (showing {MAX_ENTRY_DISPLAY} of {entry_count})")
+        } else {
+            String::new()
         };
 
         Ok(format!(
             "Project Architecture ({} files, {} symbols, {} call edges)\n\n\
              Languages:\n{}\n\n\
              Module structure:\n{}\n\n\
-             Entry points ({}):\n{}\n\n\
+             Entry points ({}):\n{}{}\n\n\
              Hub functions (top {}):\n{}\n\n\
              Communities:\n{}",
             stats.file_count,
@@ -1125,8 +1226,9 @@ impl KernavaHandler {
             stats.edge_count,
             lang_lines.join("\n"),
             dir_lines.join("\n"),
-            entry_points.len(),
+            entry_count,
             entry_points.join("\n"),
+            entry_truncated,
             hub_list.len().min(10),
             hub_lines.join("\n"),
             comm_summary,
