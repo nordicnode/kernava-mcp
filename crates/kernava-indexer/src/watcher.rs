@@ -150,7 +150,7 @@ mod tests {
             let entry = entry.unwrap();
             std::fs::copy(entry.path(), dst.join(entry.file_name())).unwrap();
         }
-        dst
+        dst.canonicalize().unwrap()
     }
 
     #[test]

@@ -831,8 +831,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
 
         // Valid TS file
         std::fs::write(dir.join("valid.ts"), "export function foo() { return 1; }").unwrap();
