@@ -1,6 +1,7 @@
 // kernava-indexer: tree-sitter parsing, symbol extraction, call resolution, incremental indexing
 
 pub mod builder;
+pub mod config;
 pub mod extractor;
 pub mod languages;
 pub mod parser;
@@ -10,6 +11,7 @@ pub mod watcher;
 #[cfg(test)]
 mod ast_dump_tests;
 
+pub use config::IndexerConfig;
 pub use extractor::{extract, CallSite, ExtractionResult, SymbolDef, SymbolKind};
 pub use languages::ModuleMap;
 pub use parser::{parse, Language};

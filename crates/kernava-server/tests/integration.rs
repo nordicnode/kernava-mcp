@@ -46,6 +46,7 @@ async fn test_mcp_server_index_and_search() {
         store: Mutex::new(store),
         graph,
         project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
     });
 
     // Build handler directly (no HTTP) — tests tool dispatch logic
@@ -120,6 +121,7 @@ async fn test_path_resolution() {
             store: Mutex::new(Store::open(&db_path).unwrap()),
             graph: kernava_graph::GraphCache::new(),
             project_root: fixture_root.clone(),
+            config: Arc::new(kernava_indexer::IndexerConfig::default()),
         },
         "math.ts",
     );

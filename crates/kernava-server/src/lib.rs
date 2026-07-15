@@ -14,6 +14,21 @@ use rmcp::transport::streamable_http_server::{
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+/// Load `kernava.toml` from project root if present, else return defaults.
+pub fn load_config(project_root: &str) -> anyhow::Result<kernava_indexer::IndexerConfig> {
+    let root = PathBuf::from(project_root)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(project_root));
+    let config_path = root.join("kernava.toml");
+    if config_path.exists() {
+        let text = std::fs::read_to_string(&config_path)?;
+        let config: kernava_indexer::IndexerConfig = toml::from_str(&text)?;
+        tracing::info!("Loaded config from {}", config_path.display());
+        Ok(config)
+    } else {
+        Ok(kernava_indexer::IndexerConfig::default())
+    }
+}
 /// Start the MCP server on the given port with the given DB path and project root.
 pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow::Result<()> {
     info!("Opening database at {db_path}");
@@ -30,12 +45,14 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
         graph.load_from_store(&store)?;
     }
 
+    let config = Arc::new(load_config(project_root)?);
     let state = Arc::new(AppState {
         store: Mutex::new(store),
         graph,
         project_root: PathBuf::from(project_root)
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(project_root)),
+        config,
     });
 
     let ct = CancellationToken::new();
@@ -91,7 +108,8 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
 pub fn index_cmd(path: &str, db_path: &str) -> anyhow::Result<()> {
     let mut store = Store::open(db_path)?;
     let root = PathBuf::from(path);
-    let results = kernava_indexer::builder::index_full(&mut store, &root)?;
+    let config = load_config(path)?;
+    let results = kernava_indexer::builder::index_full_with_config(&mut store, &root, &config)?;
     let files = results.len();
     let symbols: usize = results.iter().map(|r| r.symbols_inserted).sum();
     let resolved: usize = results.iter().map(|r| r.calls_resolved).sum();
@@ -141,10 +159,12 @@ pub fn query_cmd(
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from(project_root));
 
+    let config = Arc::new(load_config(project_root)?);
     let state = Arc::new(AppState {
         store: Mutex::new(store),
         graph,
         project_root: root,
+        config,
     });
     let handler = KernavaHandler::new(state);
 

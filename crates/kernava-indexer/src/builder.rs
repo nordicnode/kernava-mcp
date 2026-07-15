@@ -33,6 +33,25 @@ pub struct IndexFileResult {
 /// 5. In one SQLite transaction: delete old symbols for the file, upsert file,
 ///    insert nodes (symbols), insert edges (resolved calls), insert import edges
 pub fn index_file(store: &mut Store, file_path: &Path) -> Result<IndexFileResult> {
+    index_file_with_config(store, file_path, &Default::default())
+}
+
+/// Index a single file with config. Checks max_file_size via metadata before
+/// reading — bails cheaply on oversized files without allocating a String.
+pub fn index_file_with_config(
+    store: &mut Store,
+    file_path: &Path,
+    config: &crate::config::IndexerConfig,
+) -> Result<IndexFileResult> {
+    // Size gate — check metadata before reading to avoid allocating a huge String.
+    let metadata = std::fs::metadata(file_path)?;
+    if metadata.len() > config.max_file_size as u64 {
+        anyhow::bail!(
+            "file exceeds max_file_size ({} > {} bytes)",
+            metadata.len(),
+            config.max_file_size
+        );
+    }
     let source = std::fs::read_to_string(file_path)?;
     let lang = Language::from_path(file_path)
         .ok_or_else(|| anyhow::anyhow!("unsupported file type: {:?}", file_path))?;
@@ -66,7 +85,7 @@ pub fn index_file(store: &mut Store, file_path: &Path) -> Result<IndexFileResult
 
     // 4. Compute content hash (xxh3 128-bit)
     let content_hash = xxhash128_bytes(source.as_bytes());
-    let metadata = std::fs::metadata(file_path)?;
+    // Reuse metadata from size gate above — avoid redundant syscall.
     let mtime = metadata
         .modified()?
         .duration_since(std::time::UNIX_EPOCH)?
@@ -174,6 +193,24 @@ pub fn index_file(store: &mut Store, file_path: &Path) -> Result<IndexFileResult
 /// ponytail: parses each file twice (once for import graph, once for indexing).
 /// Could cache parse results to halve parse cost, but tree-sitter is fast enough.
 pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFileResult>> {
+    index_full_with_config(
+        store,
+        project_root,
+        &crate::config::IndexerConfig::default(),
+    )
+}
+
+/// Index an entire project root with config. Walks the directory tree,
+/// applies custom ignore globs + max_file_size filter, parses each file
+/// to build the import graph, topologically sorts by dependencies (producers
+/// before consumers), then indexes in topo order.
+/// ponytail: parses each file twice (once for import graph, once for indexing).
+/// Could cache parse results to halve parse cost, but tree-sitter is fast enough.
+pub fn index_full_with_config(
+    store: &mut Store,
+    project_root: &Path,
+    config: &crate::config::IndexerConfig,
+) -> Result<Vec<IndexFileResult>> {
     // 1. Collect all source files.
     // Canonicalize root so all paths are absolute+normalized — must match
     // the absolute paths resolve_module_paths produces off file.parent().
@@ -182,17 +219,40 @@ pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFil
     // Use ignore crate for .gitignore-aware file discovery.
     // Replaces hand-rolled skip list (.git, node_modules, target, etc.)
     // with proper gitignore + .ignore file support.
-    for entry in ignore::WalkBuilder::new(&root)
+    let mut builder = ignore::WalkBuilder::new(&root);
+    builder
         .hidden(true)
         .git_ignore(true)
         .ignore(true)
-        .build()
-    {
+        // Native size limit — skips oversized files at walk level.
+        .max_filesize(Some(config.max_file_size as u64));
+    // Build custom ignore matcher from config globs.
+    // ponytail: file-level filter only — doesn't prune directory descent.
+    // Upgrade: write globs to a temp .ignore file and pass to add_ignore().
+    let matcher = if config.ignore.is_empty() {
+        None
+    } else {
+        let mut gi = ignore::gitignore::GitignoreBuilder::new(&root);
+        for pat in &config.ignore {
+            if let Err(e) = gi.add_line(None, pat) {
+                warn!("invalid ignore glob {:?}: {e}", pat);
+            }
+        }
+        gi.build().ok()
+    };
+    for entry in builder.build() {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
-        if path.is_file() && Language::from_path(path).is_some() {
-            files.push(path.to_path_buf());
+        if !path.is_file() || Language::from_path(path).is_none() {
+            continue;
         }
+        // Apply custom ignore globs from config.
+        if let Some(m) = &matcher {
+            if m.matched(path, path.is_dir()).is_ignore() {
+                continue;
+            }
+        }
+        files.push(path.to_path_buf());
     }
     files.sort();
     let import_deps = build_import_deps(&files);
@@ -201,7 +261,7 @@ pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFil
     // Skip files that fail (binary, encoding, parse) — don't abort the whole index.
     let mut results = Vec::new();
     for p in &order {
-        match index_file(store, p) {
+        match index_file_with_config(store, p, config) {
             Ok(r) => results.push(r),
             Err(e) => {
                 warn!("skipping file {:?}: {e}", p);
@@ -215,6 +275,10 @@ pub fn index_full(store: &mut Store, project_root: &Path) -> Result<Vec<IndexFil
 /// Parse each file to extract its imports (parse-only, no store writes).
 /// Returns a map of file → its imported file targets (only those in `files`).
 /// Used by both `index_full` and `index_incremental` for topo-sort ordering.
+/// ponytail: no max_file_size gate here — oversized files are read for import
+/// extraction even though index_file_with_config will later bail. Correctness
+/// is fine (file still skipped at index time), but the incremental path does
+/// a wasteful read. Upgrade: thread config into build_import_deps and metadata-gate.
 fn build_import_deps(files: &[PathBuf]) -> HashMap<PathBuf, Vec<PathBuf>> {
     let file_set: HashSet<&PathBuf> = files.iter().collect();
     let mut deps = HashMap::new();
@@ -308,6 +372,16 @@ pub fn index_incremental(
     store: &mut Store,
     changed: Vec<std::path::PathBuf>,
 ) -> Result<Vec<IndexFileResult>> {
+    index_incremental_with_config(store, changed, &crate::config::IndexerConfig::default())
+}
+
+/// Index changed files with config. Same as index_incremental but applies
+/// max_file_size via index_file_with_config.
+pub fn index_incremental_with_config(
+    store: &mut Store,
+    changed: Vec<std::path::PathBuf>,
+    config: &crate::config::IndexerConfig,
+) -> Result<Vec<IndexFileResult>> {
     let mut to_index: HashSet<std::path::PathBuf> = changed.into_iter().collect();
     let mut visited: HashSet<i64> = HashSet::new();
     let mut queue: VecDeque<std::path::PathBuf> = to_index.iter().cloned().collect();
@@ -340,7 +414,7 @@ pub fn index_incremental(
 
     let mut results = Vec::new();
     for p in &sorted {
-        match index_file(store, p) {
+        match index_file_with_config(store, p, config) {
             Ok(r) => results.push(r),
             Err(e) => {
                 warn!("skipping file {:?}: {e}", p);
@@ -794,6 +868,82 @@ mod tests {
             results.is_empty(),
             "empty project should produce zero results"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_config_max_file_size_skips_oversized() {
+        let dir = std::env::temp_dir().join(format!(
+            "kernava_cfg_size_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Small file — under limit
+        std::fs::write(dir.join("small.ts"), "export function s() { return 1; }").unwrap();
+        // Large file — over limit (2 KB content, 1 byte limit)
+        let big_content = "x".repeat(2048);
+        std::fs::write(
+            dir.join("big.ts"),
+            format!("export function b() {{ return \"{big_content}\"; }}"),
+        )
+        .unwrap();
+
+        let config = crate::config::IndexerConfig {
+            max_file_size: 100,
+            ignore: Vec::new(),
+        };
+        let mut store = Store::open_in_memory().unwrap();
+        let results = index_full_with_config(&mut store, &dir, &config).unwrap();
+
+        // Only small.ts should be indexed; big.ts skipped by max_file_size
+        assert_eq!(results.len(), 1, "should index only small.ts");
+        assert!(results[0].file_path.ends_with("small.ts"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_config_ignore_glob_filters_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "kernava_cfg_ignore_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("generated")).unwrap();
+
+        // Normal file
+        std::fs::write(dir.join("main.ts"), "export function m() { return 1; }").unwrap();
+        // File in generated/ — should be ignored
+        std::fs::write(
+            dir.join("generated/gen.ts"),
+            "export function g() { return 2; }",
+        )
+        .unwrap();
+
+        let config = crate::config::IndexerConfig {
+            max_file_size: 1_048_576,
+            ignore: vec!["generated/**".to_string()],
+        };
+        let mut store = Store::open_in_memory().unwrap();
+        let results = index_full_with_config(&mut store, &dir, &config).unwrap();
+
+        // Only main.ts should be indexed; generated/gen.ts filtered by ignore glob
+        assert_eq!(
+            results.len(),
+            1,
+            "should index only main.ts, not generated/gen.ts"
+        );
+        assert!(results[0].file_path.ends_with("main.ts"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

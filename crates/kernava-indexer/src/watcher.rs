@@ -13,7 +13,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tracing::debug;
 
-use crate::builder::{index_incremental, xxhash128_bytes};
+use crate::builder::{index_incremental_with_config, xxhash128_bytes};
+use crate::config::IndexerConfig;
 use crate::parser::Language;
 
 pub struct Watcher {
@@ -94,12 +95,13 @@ impl Watcher {
         changed: Vec<PathBuf>,
         store: &mut Store,
         cache: &GraphCache,
+        config: &IndexerConfig,
     ) -> Result<()> {
         if changed.is_empty() {
             return Ok(());
         }
 
-        let results = index_incremental(store, changed)?;
+        let results = index_incremental_with_config(store, changed, config)?;
 
         for r in &results {
             if let Some(fid) = store.get_file_id(&r.file_path)? {
@@ -226,7 +228,14 @@ mod tests {
         assert_eq!(changed.len(), 1);
 
         // Process: index_incremental + sync cache
-        watcher.process(changed, &mut store, &cache).unwrap();
+        watcher
+            .process(
+                changed,
+                &mut store,
+                &cache,
+                &crate::config::IndexerConfig::default(),
+            )
+            .unwrap();
 
         // newfunc should be in cache
         let qname = format!("{}.newfunc", dir.join("math.ts").to_string_lossy());

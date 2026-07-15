@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use kernava_graph::{detect_communities, get_call_path, get_impact_radius, GraphCache, NodeId};
-use kernava_indexer::builder::index_full;
+use kernava_indexer::builder::index_full_with_config;
 use kernava_store::Store;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::schemars;
@@ -28,6 +28,7 @@ pub struct AppState {
     pub store: Mutex<Store>,
     pub graph: GraphCache,
     pub project_root: PathBuf,
+    pub config: Arc<kernava_indexer::IndexerConfig>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -238,7 +239,8 @@ impl KernavaHandler {
         let _span = info_span!("mcp_tool", name = "index_project").entered();
         let root = PathBuf::from(&params.project_root);
         let mut store = self.state.store.lock().map_err(|e| e.to_string())?;
-        let results = index_full(&mut store, &root).map_err(|e| e.to_string())?;
+        let results = index_full_with_config(&mut store, &root, &self.state.config)
+            .map_err(|e| e.to_string())?;
         self.state
             .graph
             .load_from_store(&store)
