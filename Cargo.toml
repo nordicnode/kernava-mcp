@@ -69,8 +69,12 @@ regex = "1.11"
 # File discovery (gitignore-aware)
 ignore = "0.4"
 
+# Benchmarking
+criterion = "0.5"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
