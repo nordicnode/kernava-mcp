@@ -14,5 +14,6 @@ fn main() {
     let result = helper("hello");
     let calc = Calculator::new();
     let computed = calc.compute(42);
-    println!("{}", total + product);
+    let direct = math::add(10, 20);
+    println!("{}", total + product + direct);
 }

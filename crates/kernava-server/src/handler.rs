@@ -117,7 +117,7 @@ impl KernavaHandler {
                 self.get_call_path(Parameters(params))
             }
             "get_impact_radius" => {
-                let params: GraphTraversalParams = serde_json::from_value(args)
+                let params: ImpactRadiusParams = serde_json::from_value(args)
                     .map_err(|e| e.to_string())?;
                 self.get_impact_radius_tool(Parameters(params))
             }
@@ -250,6 +250,21 @@ pub struct GraphTraversalParams {
 
 fn default_depth() -> u32 {
     20
+}
+
+/// Default depth for impact_radius — capped lower than traversal default
+/// because impact radius grows exponentially (all callers-of-callers).
+fn default_impact_depth() -> u32 {
+    10
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImpactRadiusParams {
+    /// Qualified name of the source symbol.
+    pub source: String,
+    /// Maximum traversal depth. Default 10 (impact radius grows exponentially).
+    #[serde(default = "default_impact_depth")]
+    pub max_depth: u32,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -630,10 +645,17 @@ impl KernavaHandler {
         // Lock dropped — disk I/O doesn't block other MCP tool calls
 
         // ponytail: simple suffix match instead of full glob crate.
+        // Handles common patterns: "*.rs" → suffix ".rs", "**/*.rs" → suffix ".rs",
+        // "handler.rs" → exact filename. Strips common glob prefixes/prefix chars.
         // Upgrade path: use the `glob` crate for full pattern matching when needed.
         let file_filter = |path: &str| -> bool {
             match &params.file_glob {
-                Some(g) => path.ends_with(g.trim_start_matches('*')),
+                Some(g) => {
+                    // Strip `**/` prefix (common in glob patterns like "**/*.rs")
+                    // then strip leading `*` chars (e.g. "*.rs" → ".rs")
+                    let filter = g.trim_start_matches("**/").trim_start_matches('*');
+                    path.ends_with(filter)
+                }
                 None => true,
             }
         };
@@ -744,6 +766,25 @@ impl KernavaHandler {
         if results.is_empty() {
             return Ok(format!("No callers found for '{}'.", params.source));
         }
+
+        // Query incoming edges ONCE and build a lookup map for depth-1 callers.
+        // Previously this re-queried for each caller — O(n²) store round-trips.
+        use std::collections::HashMap;
+        let edge_map: HashMap<NodeId, (String, i32)> = store
+            .get_incoming_edges(node.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|e| e.edge_type == "calls")
+            .filter_map(|e| {
+                let file = e
+                    .file_id
+                    .and_then(|fid| store.get_file_path(fid).ok().flatten())
+                    .unwrap_or_default();
+                let line = e.line.unwrap_or(0);
+                Some((e.source_id, (file, line)))
+            })
+            .collect();
+
         results.sort_by_key(|r| r.1);
         let count = results.len();
         let mut lines = Vec::with_capacity(count);
@@ -756,20 +797,11 @@ impl KernavaHandler {
                 .map(|n| n.qualified_name.clone())
                 .unwrap_or_else(|| format!("node#{caller_id}"));
             if *depth == 1 {
-                // Direct caller — look up the call-site edge for file/line.
-                let edges = store
-                    .get_incoming_edges(node.id)
-                    .map_err(|e| e.to_string())?;
-                let edge = edges
-                    .iter()
-                    .filter(|e| e.edge_type == "calls" && e.source_id == *caller_id)
-                    .next();
-                let file = edge
-                    .and_then(|e| {
-                        e.file_id.and_then(|fid| store.get_file_path(fid).ok().flatten())
-                    })
+                // Direct caller — use pre-built edge map for file/line.
+                let (file, line) = edge_map
+                    .get(caller_id)
+                    .cloned()
                     .unwrap_or_default();
-                let line = edge.and_then(|e| e.line).unwrap_or(0);
                 lines.push(format!(
                     "  {caller_name} → {qname} at {file}:{line} (confidence {:.2})",
                     conf
@@ -837,6 +869,25 @@ impl KernavaHandler {
         if results.is_empty() {
             return Ok(format!("No callees found for '{}'.", params.source));
         }
+
+        // Query outgoing edges ONCE and build a lookup map for depth-1 callees.
+        // Previously this re-queried for each callee — O(n²) store round-trips.
+        use std::collections::HashMap;
+        let edge_map: HashMap<NodeId, (String, i32)> = store
+            .get_outgoing_edges(node.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|e| e.edge_type == "calls")
+            .filter_map(|e| {
+                let file = e
+                    .file_id
+                    .and_then(|fid| store.get_file_path(fid).ok().flatten())
+                    .unwrap_or_default();
+                let line = e.line.unwrap_or(0);
+                e.target_id.map(|tid| (tid, (file, line)))
+            })
+            .collect();
+
         results.sort_by_key(|r| r.1);
         let count = results.len();
         let mut lines = Vec::with_capacity(count);
@@ -846,20 +897,11 @@ impl KernavaHandler {
                 None => format!("node#{callee_id}"),
             };
             if *depth == 1 {
-                // Direct callee — look up the call-site edge for target resolution.
-                let edges = store
-                    .get_outgoing_edges(node.id)
-                    .map_err(|e| e.to_string())?;
-                let edge = edges
-                    .iter()
-                    .filter(|e| e.edge_type == "calls" && e.target_id == Some(*callee_id))
-                    .next();
-                let file = edge
-                    .and_then(|e| {
-                        e.file_id.and_then(|fid| store.get_file_path(fid).ok().flatten())
-                    })
+                // Direct callee — use pre-built edge map for file/line.
+                let (file, line) = edge_map
+                    .get(callee_id)
+                    .cloned()
                     .unwrap_or_default();
-                let line = edge.and_then(|e| e.line).unwrap_or(0);
                 lines.push(format!(
                     "  {qname} → {callee_name} at {file}:{line} (confidence {:.2})",
                     conf
@@ -947,7 +989,7 @@ impl KernavaHandler {
     )]
     fn get_impact_radius_tool(
         &self,
-        Parameters(params): Parameters<GraphTraversalParams>,
+        Parameters(params): Parameters<ImpactRadiusParams>,
     ) -> Result<String, String> {
         let _span = info_span!("mcp_tool", name = "get_impact_radius_tool").entered();
         let qname = resolve_qname(&self.state, &params.source);
@@ -961,11 +1003,7 @@ impl KernavaHandler {
             None => return Ok(format!("Symbol '{}' not found.", params.source)),
         };
 
-        let depth = if params.max_depth == 20 {
-            10
-        } else {
-            params.max_depth as usize
-        };
+        let depth = if params.max_depth == 0 { 10 } else { params.max_depth as usize };
         let radius = get_impact_radius(&self.state.graph, node.id, depth);
 
         if radius.total == 0 {
@@ -1029,6 +1067,18 @@ impl KernavaHandler {
                     // resolution which the call graph can't track. Skip to avoid
                     // false positives — these are always reachable at runtime.
                     && n.name != "default"
+                    // Serde default functions (#[serde(default = "fn_name")]) are
+                    // invoked via deserialization, not direct calls. All start with
+                    // "default_" by our own convention.
+                    && !n.name.starts_with("default_")
+                    // Benchmark harness functions are invoked by the benchmark
+                    // runner, not by project code — would be false positives.
+                    && !n.name.starts_with("bench_")
+                    // From/Into/TryFrom trait impls called via conversion syntax
+                    // which the call graph can't track.
+                    && n.name != "from"
+                    && n.name != "into"
+                    && n.name != "try_into"
             })
             .map(|entry| entry.value().clone())
             .collect();
@@ -1116,14 +1166,14 @@ impl KernavaHandler {
         }
         let total = communities.len();
         let multi = communities.iter().filter(|c| c.members.len() >= 2).count();
-        let capped = shown < multi;
+        let singletons = total - multi;
+        let truncated = if shown < multi {
+            format!(", showing {shown} of {multi}")
+        } else {
+            String::new()
+        };
         let summary = format!(
-            "Found {total} communities (showing {shown} multi-member{}):",
-            if capped {
-                format!(", {multi} total multi-member, {total} total")
-            } else {
-                String::new()
-            }
+            "Found {total} communities ({multi} multi-member, {singletons} singletons{truncated}):"
         );
         Ok(format!("{summary}\n{}", lines.join("\n")))
     }
@@ -1155,15 +1205,20 @@ impl KernavaHandler {
             .collect();
         dir_lines.sort();
 
-        // 3. Entry points: exported symbols + functions named "main"
-        let entry_count = all_nodes
-            .iter()
-            .filter(|n| n.is_exported || n.name == "main")
-            .count();
+        // 3. Entry points: functions named "main", plus top-level exported functions
+        // and methods (functions/methods in files named lib.rs/main.rs/mod.rs at the
+        // crate root). Structs/enums/types are data declarations, not entry points.
+        let is_entry = |n: &kernava_store::NodeRow| {
+            n.name == "main"
+                || (n.is_exported
+                    && (n.kind == "function" || n.kind == "method")
+                    && n.line_start <= 5) // top-level definitions start near file top
+        };
+        let entry_count = all_nodes.iter().filter(|n| is_entry(n)).count();
         const MAX_ENTRY_DISPLAY: usize = 20;
         let entry_points: Vec<String> = all_nodes
             .iter()
-            .filter(|n| n.is_exported || n.name == "main")
+            .filter(|n| is_entry(n))
             .take(MAX_ENTRY_DISPLAY)
             .map(|n| {
                 format!(
@@ -1199,12 +1254,13 @@ impl KernavaHandler {
         } else {
             let multi = communities.iter().filter(|c| c.members.len() >= 2).count();
             let singletons = communities.len() - multi;
+            let largest = communities.iter().map(|c| c.members.len()).max().unwrap_or(0);
             format!(
                 "  {} communities ({} multi-member, {} singletons, largest: {} members)",
                 communities.len(),
                 multi,
                 singletons,
-                communities[0].members.len()
+                largest
             )
         };
 
@@ -1318,17 +1374,21 @@ impl KernavaHandler {
             ));
         }
 
+        let sections: Vec<String> = [&high, &medium, &low]
+            .into_iter()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.join("\n"))
+            .collect();
+
         Ok(format!(
             "Git impact analysis: {} changed files, {} affected symbols\n\
-             HIGH: {} | MEDIUM: {} | LOW: {}\n\n{}\n{}\n{}",
+             HIGH: {} | MEDIUM: {} | LOW: {}\n\n{}",
             changed_paths.len(),
             affected_symbols.len(),
             high.len(),
             medium.len(),
             low.len(),
-            high.join("\n"),
-            medium.join("\n"),
-            low.join("\n"),
+            sections.join("\n\n"),
         ))
     }
 }

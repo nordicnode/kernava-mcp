@@ -138,9 +138,10 @@ fn resolve_one(
 ) -> ResolvedCall {
     let callee = &call.callee;
 
-    // Handle member expressions: "obj.method" or "a.b.c"
-    // Split into prefix and suffix: prefix may be an import alias
-    let (prefix, suffix) = split_callee(callee);
+    // Handle member expressions and module paths:
+    // "obj.method" / "a.b.c" → split on '.'
+    // "module::func" / "crate::module::func" → split on '::'
+    let (prefix, suffix, is_rust_path) = split_callee(callee);
 
     // Strategy 1: Import map (confidence 0.95)
     if let Some(resolved) = try_import_map(callee, prefix, suffix, module_map, registry) {
@@ -158,7 +159,10 @@ fn resolve_one(
     // Strategy 4: Global unique (confidence 0.90)
     // Only for unqualified calls — member expressions (arr.push, str.split) are
     // builtin method calls, not project symbols. prefix.is_none() guards this.
-    if prefix.is_none() {
+    // Exception: Rust ::-qualified paths (resolver::resolve_calls) are module
+    // paths, not method calls on objects — the suffix is a real function name
+    // that's safe to try via global-unique.
+    if prefix.is_none() || is_rust_path {
         if let Some(resolved) = try_global_unique(suffix, registry) {
             return resolved;
         }
@@ -179,19 +183,33 @@ fn resolve_one(
     }
 }
 
-/// Split a callee string into (prefix, suffix).
-/// "foo" → (None, "foo")
-/// "obj.method" → (Some("obj"), "method")
-/// "a.b.c" → (Some("a.b"), "c")
-fn split_callee(callee: &str) -> (Option<&str>, &str) {
+/// Split a callee string into (prefix, suffix, is_rust_path).
+/// "foo" → (None, "foo", false)
+/// "obj.method" → (Some("obj"), "method", false)
+/// "a.b.c" → (Some("a.b"), "c", false)
+/// "module::func" → (Some("module"), "func", true)
+/// "crate::module::func" → (Some("crate::module"), "func", true)
+/// `is_rust_path` is true when the split was on `::` (Rust module path),
+/// false for `.`-split member expressions (TS/JS/Python/Go/etc.).
+fn split_callee(callee: &str) -> (Option<&str>, &str, bool) {
+    // Check for Rust :: separator first — takes precedence over .
+    // so "foo::bar.baz" splits on :: producing suffix "bar.baz".
+    if let Some(pos) = callee.rfind("::") {
+        return (Some(&callee[..pos]), &callee[pos + 2..], true);
+    }
     match callee.rfind('.') {
-        Some(pos) => (Some(&callee[..pos]), &callee[pos + 1..]),
-        None => (None, callee),
+        Some(pos) => (Some(&callee[..pos]), &callee[pos + 1..], false),
+        None => (None, callee, false),
     }
 }
 
 /// Strategy 1: Import map.
 /// If prefix is an import alias, resolve through the module map.
+/// NOTE: For Rust, `use` paths are crate-relative (e.g. "crate::module::func") which
+/// don't match the file-path-based qualified names in the registry (e.g.
+/// "crates/foo/src/bar.rs.func"). So import-map resolution is effectively non-functional
+/// for Rust. Cross-module Rust calls resolve via global-unique (when the callee's
+/// simple name is unambiguous) when `::` splitting produces the correct suffix.
 fn try_import_map(
     full_callee: &str,
     prefix: Option<&str>,
@@ -509,9 +527,17 @@ mod tests {
 
     #[test]
     fn test_split_callee() {
-        assert_eq!(split_callee("foo"), (None, "foo"));
-        assert_eq!(split_callee("obj.method"), (Some("obj"), "method"));
-        assert_eq!(split_callee("a.b.c"), (Some("a.b"), "c"));
+        assert_eq!(split_callee("foo"), (None, "foo", false));
+        assert_eq!(split_callee("obj.method"), (Some("obj"), "method", false));
+        assert_eq!(split_callee("a.b.c"), (Some("a.b"), "c", false));
+    }
+
+    #[test]
+    fn test_split_callee_rust_path() {
+        assert_eq!(split_callee("module::func"), (Some("module"), "func", true));
+        assert_eq!(split_callee("crate::module::func"), (Some("crate::module"), "func", true));
+        // :: takes precedence over .
+        assert_eq!(split_callee("a::b.c"), (Some("a"), "b.c", true));
     }
 
     #[test]
@@ -923,5 +949,116 @@ mod tests {
             resolved.target_qualified.as_deref(),
             Some("src/broken.valid")
         );
+    }
+
+    #[test]
+    fn test_rust_path_separator_global_unique() {
+        // "module::func" should split on :: and try global-unique with suffix "func"
+        let mut reg = FunctionRegistry::new();
+        reg.register(SymbolDef {
+            kind: SymbolKind::Function,
+            name: "resolve_calls".into(),
+            qualified_name: "src/resolver.resolve_calls".into(),
+            file_path: "src/resolver".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            return_type: None,
+            receiver_type: None,
+            is_exported: false,
+            complexity: 1,
+            decorators: vec![],
+        });
+        let map = ModuleMap::default();
+
+        let call = CallSite {
+            callee: "resolver::resolve_calls".into(),
+            line: 5,
+            caller_qualified: Some("src/builder.index_file".into()),
+            col: 10,
+        };
+        // Should resolve via global-unique since "resolve_calls" is unique
+        let resolved = resolve_one(&call, &reg, &map, "src/builder");
+        assert_eq!(resolved.strategy, ResolutionStrategy::GlobalUnique);
+        assert_eq!(
+            resolved.target_qualified.as_deref(),
+            Some("src/resolver.resolve_calls")
+        );
+    }
+
+    #[test]
+    fn test_rust_path_separator_not_resolved_when_ambiguous() {
+        // If two symbols have the same simple name, ::-qualified should NOT resolve
+        // via global-unique (ambiguous)
+        let mut reg = FunctionRegistry::new();
+        reg.register(SymbolDef {
+            kind: SymbolKind::Function,
+            name: "add".into(),
+            qualified_name: "src/math.add".into(),
+            file_path: "src/math".into(),
+            line_start: 1,
+            line_end: 5,
+            signature: None,
+            return_type: None,
+            receiver_type: None,
+            is_exported: true,
+            complexity: 1,
+            decorators: vec![],
+        });
+        reg.register(SymbolDef {
+            kind: SymbolKind::Function,
+            name: "add".into(),
+            qualified_name: "src/other.add".into(),
+            file_path: "src/other".into(),
+            line_start: 1,
+            line_end: 5,
+            signature: None,
+            return_type: None,
+            receiver_type: None,
+            is_exported: true,
+            complexity: 1,
+            decorators: vec![],
+        });
+        let map = ModuleMap::default();
+
+        let call = CallSite {
+            callee: "math::add".into(),
+            line: 3,
+            caller_qualified: Some("src/main.main".into()),
+            col: 10,
+        };
+        let resolved = resolve_one(&call, &reg, &map, "src/main");
+        assert_eq!(resolved.strategy, ResolutionStrategy::Unresolved);
+    }
+
+    #[test]
+    fn test_dot_qualified_still_excludes_global_unique() {
+        // "arr.push" should NOT try global-unique (member expression on object)
+        let mut reg = FunctionRegistry::new();
+        reg.register(SymbolDef {
+            kind: SymbolKind::Function,
+            name: "push".into(),
+            qualified_name: "src/arr.push".into(),
+            file_path: "src/arr".into(),
+            line_start: 1,
+            line_end: 5,
+            signature: None,
+            return_type: None,
+            receiver_type: None,
+            is_exported: true,
+            complexity: 1,
+            decorators: vec![],
+        });
+        let map = ModuleMap::default();
+
+        let call = CallSite {
+            callee: "arr.push".into(),
+            line: 3,
+            caller_qualified: Some("src/main.main".into()),
+            col: 10,
+        };
+        let resolved = resolve_one(&call, &reg, &map, "src/main");
+        // Should be unresolved — dot-qualified member expressions skip global-unique
+        assert_eq!(resolved.strategy, ResolutionStrategy::Unresolved);
     }
 }
