@@ -13,5 +13,8 @@
 .DS_Store
 Thumbs.db
 
+# Local session/plan artifacts
+.omo/
+
 # Internal dev docs (not for public repo)
 DEVELOPMENT_PLAN.md
