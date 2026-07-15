@@ -73,6 +73,9 @@ cargo build --release
 # Or index from CLI without running the server
 ./target/release/kernava index --path /path/to/your/project
 ./target/release/kernava stats  # show index statistics
+
+# Query the index from CLI (for debugging/scripting)
+./target/release/kernava query search_symbols --args '{"query":"handleRequest"}' --db-path kernava.db
 ```
 
 Then configure your MCP client (below) to connect to `http://localhost:8080/mcp`.
@@ -140,6 +143,23 @@ Six-strategy cascade at index time:
 4. **CrossFile** — callee matches a symbol in a file on the import path
 5. **Default** — callee unresolved, edge stored with `target_id = NULL`
 6. **Builtins** — common standard library calls (partial v1)
+
+## Performance
+
+Measured with `criterion` on a debug build (Intel i5-9400, Linux). Release builds are faster.
+
+| Operation | Median | What it measures |
+|---|---|---|
+| Parse TypeScript | 10.5 µs | tree-sitter parse only |
+| Parse Python | 6.7 µs | tree-sitter parse only |
+| Parse Rust | 7.2 µs | tree-sitter parse only |
+| Index single file | 789 µs | parse → extract → resolve → SQLite upsert (1 transaction) |
+| Index 11 files | 2.4 ms | full project: walk → topo sort → index all files |
+| Symbol search (FTS5) | 34 µs | full-text search across all symbols |
+| Cross-style search | 38 µs | snake_case query matching camelCase symbol |
+
+11-language support, SQLite-WAL storage, sub-ms queries. The call graph stays
+warm in RAM across all MCP sessions — no cold starts.
 
 ## License
 
