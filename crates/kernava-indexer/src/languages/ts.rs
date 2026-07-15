@@ -146,61 +146,73 @@ fn node_text(node: &tree_sitter::Node, source: &str) -> String {
 ///   const { foo: bar } = require('./bar')  → {"bar": "./bar"}
 ///   require('./bar')                       → (no binding, just module_paths)
 pub fn parse_require_calls(root: &tree_sitter::Node, source: &str, map: &mut ModuleMap) {
-    scan_requires(root, source, map);
-}
-
-fn scan_requires(node: &tree_sitter::Node, source: &str, map: &mut ModuleMap) {
-    // Look for variable_declarator with require() initializer
-    if node.kind() == "variable_declarator" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Some(value_node) = node.child_by_field_name("value") {
-                if let Some(module_path) = extract_require_path(&value_node, source) {
-                    map.module_paths.push(module_path.clone());
-                    // Name can be an identifier or an object_pattern (destructuring)
-                    if name_node.kind() == "identifier" {
-                        let local = node_text(&name_node, source);
-                        map.imports.insert(local, module_path);
-                    } else if name_node.kind() == "object_pattern" {
-                        // Destructuring: { foo } or { foo: bar }
-                        let mut c = name_node.walk();
-                        for prop in name_node.children(&mut c) {
-                            if prop.kind() == "shorthand_property_identifier"
-                                || prop.kind() == "shorthand_property_identifier_pattern"
-                            {
-                                let local = node_text(&prop, source);
-                                map.imports.insert(local, module_path.clone());
-                            } else if prop.kind() == "pair_pattern"
-                                || prop.kind() == "pair_property"
-                            {
-                                // { foo: bar } — bar is local, foo is imported name
-                                if let Some(value) = prop.child_by_field_name("value") {
-                                    if value.kind() == "identifier" {
-                                        let local = node_text(&value, source);
-                                        map.imports.insert(local, module_path.clone());
+    // Iterative scan — no native recursion. The recursive version would overflow
+    // on deeply-nested JS (e.g. generated/bundled files). Returns true from
+    // `handle_declarator` when a require() assignment is found, in which case we
+    // do NOT descend into that declarator's children (matching the old `return`
+    // early-exit).
+    use std::collections::VecDeque;
+    fn handle(node: &tree_sitter::Node, source: &str, map: &mut ModuleMap) -> bool {
+        // variable_declarator with require() initializer
+        if node.kind() == "variable_declarator" {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Some(value_node) = node.child_by_field_name("value") {
+                    if let Some(module_path) = extract_require_path(&value_node, source) {
+                        map.module_paths.push(module_path.clone());
+                        if name_node.kind() == "identifier" {
+                            let local = node_text(&name_node, source);
+                            map.imports.insert(local, module_path);
+                        } else if name_node.kind() == "object_pattern" {
+                            let mut c = name_node.walk();
+                            for prop in name_node.children(&mut c) {
+                                if prop.kind() == "shorthand_property_identifier"
+                                    || prop.kind() == "shorthand_property_identifier_pattern"
+                                {
+                                    let local = node_text(&prop, source);
+                                    map.imports.insert(local, module_path.clone());
+                                } else if prop.kind() == "pair_pattern" || prop.kind() == "pair_property" {
+                                    if let Some(value) = prop.child_by_field_name("value") {
+                                        if value.kind() == "identifier" {
+                                            let local = node_text(&value, source);
+                                            map.imports.insert(local, module_path.clone());
+                                        }
                                     }
                                 }
                             }
                         }
+                        return true;
                     }
-                    return;
                 }
             }
         }
-    }
-
-    // Also catch bare require('./bar') with no assignment — track module path only
-    if node.kind() == "call_expression" {
-        if let Some(module_path) = extract_require_path(node, source) {
-            if !map.module_paths.contains(&module_path) {
-                map.module_paths.push(module_path);
+        // bare require('./bar') with no assignment — track module path only
+        if node.kind() == "call_expression" {
+            if let Some(module_path) = extract_require_path(node, source) {
+                if !map.module_paths.contains(&module_path) {
+                    map.module_paths.push(module_path);
+                }
             }
         }
+        false
     }
 
-    // Recurse into all children
-    let mut c = node.walk();
-    for child in node.children(&mut c) {
-        scan_requires(&child, source, map);
+    let mut stack: VecDeque<tree_sitter::Node> = VecDeque::new();
+    {
+        let mut c = root.walk();
+        for child in root.children(&mut c) {
+            stack.push_back(child);
+        }
+    }
+    while let Some(n) = stack.pop_front() {
+        // handle() returns true when this declarator was a require() assignment —
+        // skip descending into it (matches recursive version's early `return`).
+        if handle(&n, source, map) {
+            continue;
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            stack.push_back(child);
+        }
     }
 }
 

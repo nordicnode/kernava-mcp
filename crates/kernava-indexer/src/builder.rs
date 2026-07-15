@@ -271,7 +271,7 @@ pub fn index_full_with_config(
         files.push(path.to_path_buf());
     }
     files.sort();
-    let import_deps = build_import_deps(&files);
+    let import_deps = build_import_deps(&files, config);
     let order = topo_sort(&files, &import_deps);
     // 3. Index in topo order. Producers' nodes are committed before consumers.
     // Seed the registry ONCE from the store so that:
@@ -298,14 +298,24 @@ pub fn index_full_with_config(
 /// Parse each file to extract its imports (parse-only, no store writes).
 /// Returns a map of file → its imported file targets (only those in `files`).
 /// Used by both `index_full` and `index_incremental` for topo-sort ordering.
-/// ponytail: no max_file_size gate here — oversized files are read for import
-/// extraction even though index_file_with_config will later bail. Correctness
-/// is fine (file still skipped at index time), but the incremental path does
-/// a wasteful read. Upgrade: thread config into build_import_deps and metadata-gate.
-fn build_import_deps(files: &[PathBuf]) -> HashMap<PathBuf, Vec<PathBuf>> {
+fn build_import_deps(
+    files: &[PathBuf],
+    config: &crate::config::IndexerConfig,
+) -> HashMap<PathBuf, Vec<PathBuf>> {
     let file_set: HashSet<&PathBuf> = files.iter().collect();
     let mut deps = HashMap::new();
     for p in files {
+        // Skip oversized / unreadable files at the metadata level — matches the
+        // gate in index_file_inner and avoids a wasteful read+parse of a file
+        // that will be skipped at index time anyway.
+        let oversized = match std::fs::metadata(p) {
+            Ok(m) => m.len() > config.max_file_size as u64,
+            Err(_) => true, // unreadable → treat like oversized (no deps)
+        };
+        if oversized {
+            deps.insert(p.clone(), Vec::new());
+            continue;
+        }
         let source = match std::fs::read_to_string(p) {
             Ok(s) => s,
             Err(_) => {
@@ -364,8 +374,13 @@ fn topo_sort(files: &[PathBuf], deps: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<Pa
         .iter()
         .filter(|f| *pending_deps.get(f).unwrap() == 0)
         .collect();
-    let mut result = Vec::new();
+    let mut result: Vec<PathBuf> = Vec::with_capacity(files.len());
+    // Track which files Kahn's algorithm already emitted, so the cycle-tail
+    // loop is O(N) total instead of O(N²) via result.contains(f). Files in
+    // the tail are exactly `!visited` after the queue drains.
+    let mut visited: HashSet<&PathBuf> = HashSet::with_capacity(files.len());
     while let Some(f) = queue.pop_front() {
+        visited.insert(f);
         result.push(f.clone());
         if let Some(deps_list) = dependents.get(f) {
             let deps_vec: Vec<&PathBuf> = deps_list.to_vec();
@@ -379,9 +394,9 @@ fn topo_sort(files: &[PathBuf], deps: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<Pa
         }
     }
 
-    // Remaining files have cycles — append in sorted order
+    // Remaining files are in cycles — append in sorted order (O(N), single pass).
     for f in files {
-        if !result.contains(f) {
+        if !visited.contains(f) {
             result.push(f.clone());
         }
     }
@@ -432,7 +447,7 @@ pub fn index_incremental_with_config(
     // the store (no import_edges rows). Avoids the FK cascade bug where
     // alphabetical sort indexes main.ts before math.ts.
     let sorted_files: Vec<PathBuf> = to_index.into_iter().collect();
-    let import_deps = build_import_deps(&sorted_files);
+    let import_deps = build_import_deps(&sorted_files, config);
     let sorted = topo_sort(&sorted_files, &import_deps);
 
     let mut results = Vec::new();

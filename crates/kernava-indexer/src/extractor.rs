@@ -5,6 +5,7 @@
 use crate::languages::ModuleMap;
 use crate::parser::Language;
 use anyhow::Result;
+use std::collections::VecDeque;
 use tree_sitter::Node;
 
 /// A symbol definition extracted from source code.
@@ -80,44 +81,55 @@ pub fn extract(source: &str, lang: Language, file_path: &str) -> Result<Extracti
     // Extract imports first (needed for call resolution later)
     extract_imports(&root, source, lang, &mut result.module_map);
 
-    // Walk the AST recursively, extracting symbols and calls
-    walk(&root, source, file_path, None, lang, &mut result);
+    // Walk the AST iteratively, extracting symbols and calls.
+    // Iterative (work-stack) instead of recursive: avoids stack overflow on
+    // deeply-nested ASTs (C/C++ preprocessor-heavy headers can produce trees
+    // hundreds of levels deep). Each level is a work item on the heap, not a
+    // native stack frame.
+    let mut work: VecDeque<(Node<'_>, Option<String>)> = VecDeque::new();
+    work.push_back((root, None));
+    while let Some((node, parent_symbol)) = work.pop_front() {
+        walk_one(&node, source, file_path, &parent_symbol, lang, &mut result, &mut work);
+    }
 
     Ok(result)
 }
 
-/// Walk the tree collecting symbols and calls recursively.
-fn walk(
-    node: &Node,
+/// Process one AST node: emit its symbol/call records, then push the children
+/// that should be visited next onto `work`. Iterative equivalent of the old
+/// recursive `walk` — no native recursion, so unbounded AST depth is safe.
+fn walk_one<'t>(
+    node: &Node<'t>,
     source: &str,
     file_path: &str,
-    parent_symbol: Option<&str>,
+    parent_symbol: &Option<String>,
     lang: Language,
     result: &mut ExtractionResult,
+    work: &mut VecDeque<(Node<'t>, Option<String>)>,
 ) {
     match node.kind() {
         // ── TS/JS: function declarations ──
         "function_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_function(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
-                    walk(&child, source, file_path, Some(&qn), lang, result);
+                    work.push_back((child, Some(qn.clone())));
                 }
                 return;
             }
         }
         // ── Python: function definitions ──
         "function_definition" if lang == Language::Python => {
-            if let Some(sym) = extract_function(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // Walk the body (skip parameters/return type to avoid false calls)
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "block" {
-                        walk(&child, source, file_path, Some(&qn), lang, result);
+                        work.push_back((child, Some(qn.clone())));
                     }
                 }
                 return;
@@ -125,7 +137,7 @@ fn walk(
         }
         // ── TS/JS: class declarations ──
         "class_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
@@ -133,7 +145,7 @@ fn walk(
                     if child.kind() == "class_body" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -142,7 +154,7 @@ fn walk(
         }
         // ── Python: class definitions ──
         "class_definition" if lang == Language::Python => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // Python class body is a `block` containing function_definition nodes
@@ -156,7 +168,7 @@ fn walk(
                                 member.kind(),
                                 "function_definition" | "decorated_definition"
                             ) {
-                                walk_method(&member, source, file_path, &qn, lang, result);
+                                walk_method(&member, source, file_path, &qn, lang, result, work);
                             }
                         }
                     }
@@ -166,14 +178,14 @@ fn walk(
         }
         // ── Rust: free functions ──
         "function_item" if lang.is_rust() => {
-            if let Some(sym) = extract_function(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // Walk the body (block) for calls
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "block" {
-                        walk(&child, source, file_path, Some(&qn), lang, result);
+                        work.push_back((child, Some(qn.clone())));
                     }
                 }
                 return;
@@ -196,7 +208,7 @@ fn walk(
                 if child.kind() == "declaration_list" {
                     let mut body_cursor = child.walk();
                     for member in child.children(&mut body_cursor) {
-                        walk_method(&member, source, file_path, &impl_qn, lang, result);
+                        walk_method(&member, source, file_path, &impl_qn, lang, result, work);
                     }
                 }
             }
@@ -204,21 +216,21 @@ fn walk(
         }
         // ── Rust: struct ──
         "struct_item" if lang.is_rust() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
         }
         // ── Rust: enum ──
         "enum_item" if lang.is_rust() => {
-            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
         }
         // ── Rust: trait ──
         "trait_item" if lang.is_rust() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // Walk trait body for method signatures + default impls
@@ -227,7 +239,7 @@ fn walk(
                     if child.kind() == "declaration_list" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -236,7 +248,7 @@ fn walk(
         }
         // ── Go: free functions ──
         "function_declaration" if lang.is_go() => {
-            if let Some(mut sym) = extract_function(node, source, file_path, parent_symbol) {
+            if let Some(mut sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
                 sym.is_exported = is_go_exported(&sym.name);
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
@@ -244,7 +256,7 @@ fn walk(
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "block" {
-                        walk(&child, source, file_path, Some(&qn), lang, result);
+                        work.push_back((child, Some(qn.clone())));
                     }
                 }
                 return;
@@ -262,7 +274,7 @@ fn walk(
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "block" {
-                        walk(&child, source, file_path, Some(&qn), lang, result);
+                        work.push_back((child, Some(qn.clone())));
                     }
                 }
                 return;
@@ -287,14 +299,14 @@ fn walk(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "function_definition" || child.kind() == "class_definition" {
-                    walk(&child, source, file_path, parent_symbol, lang, result);
+                    work.push_back((child, parent_symbol.clone()));
                 }
             }
             return;
         }
         // ── Java: class declaration ──
         "class_declaration" if lang.is_java() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
@@ -302,7 +314,7 @@ fn walk(
                     if child.kind() == "class_body" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -311,7 +323,7 @@ fn walk(
         }
         // ── Java: interface declaration ──
         "interface_declaration" if lang.is_java() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // Interface body has method signatures (no body)
@@ -320,7 +332,7 @@ fn walk(
                     if child.kind() == "interface_body" {
                         let mut body_cursor = child.walk();
                         for member in child.children(&mut body_cursor) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -329,7 +341,7 @@ fn walk(
         }
         // ── Java: enum declaration ──
         "enum_declaration" if lang.is_java() => {
-            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
@@ -343,7 +355,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -351,14 +363,14 @@ fn walk(
         }
         // ── C#: class declaration ──
         "class_declaration" if lang.is_csharp() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // C# body is via `body` field → declaration_list
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result);
+                        walk_method(&member, source, file_path, &qn, lang, result, work);
                     }
                 }
                 return;
@@ -366,13 +378,13 @@ fn walk(
         }
         // ── C#: interface declaration ──
         "interface_declaration" if lang.is_csharp() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result);
+                        walk_method(&member, source, file_path, &qn, lang, result, work);
                     }
                 }
                 return;
@@ -380,7 +392,7 @@ fn walk(
         }
         // ── C#: enum declaration ──
         "enum_declaration" if lang.is_csharp() => {
-            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
@@ -389,7 +401,7 @@ fn walk(
         "namespace_declaration" if lang.is_csharp() => {
             // Recurse into the namespace body (declaration_list)
             if let Some(body) = node.child_by_field_name("body") {
-                walk(&body, source, file_path, parent_symbol, lang, result);
+                work.push_back((body, parent_symbol.clone()));
             }
             return;
         }
@@ -400,7 +412,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -408,13 +420,13 @@ fn walk(
         }
         // ── Ruby: class ──
         "class" if lang.is_ruby() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result);
+                        walk_method(&member, source, file_path, &qn, lang, result, work);
                     }
                 }
                 return;
@@ -422,13 +434,13 @@ fn walk(
         }
         // ── Ruby: module ──
         "module" if lang.is_ruby() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut bc = body.walk();
                     for member in body.children(&mut bc) {
-                        walk_method(&member, source, file_path, &qn, lang, result);
+                        walk_method(&member, source, file_path, &qn, lang, result, work);
                     }
                 }
                 return;
@@ -437,7 +449,7 @@ fn walk(
         // ── Ruby: top-level method (free function) ──
         "method" if lang.is_ruby() && parent_symbol.is_none() => {
             if let Some(name) = get_child_text(node, "name", source) {
-                let qn = make_qualified_name(file_path, &name, parent_symbol);
+                let qn = make_qualified_name(file_path, &name, parent_symbol.as_deref());
                 result.symbols.push(SymbolDef {
                     kind: SymbolKind::Function,
                     name,
@@ -453,7 +465,7 @@ fn walk(
                     decorators: Vec::new(),
                 });
                 if let Some(body) = node.child_by_field_name("body") {
-                    walk(&body, source, file_path, Some(&qn), lang, result);
+                    work.push_back((body, Some(qn.clone())));
                 }
                 return;
             }
@@ -465,7 +477,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -473,7 +485,7 @@ fn walk(
         }
         // ── PHP: class declaration ──
         "class_declaration" if lang.is_php() => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
@@ -481,7 +493,7 @@ fn walk(
                     if child.kind() == "declaration_list" {
                         let mut bc = child.walk();
                         for member in child.children(&mut bc) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -490,7 +502,7 @@ fn walk(
         }
         // ── PHP: interface declaration ──
         "interface_declaration" if lang.is_php() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
@@ -498,7 +510,7 @@ fn walk(
                     if child.kind() == "declaration_list" {
                         let mut bc = child.walk();
                         for member in child.children(&mut bc) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -507,13 +519,13 @@ fn walk(
         }
         // ── PHP: free function definition ──
         "function_definition" if lang.is_php() => {
-            if let Some(sym) = extract_function(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_function(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "compound_statement" {
-                        walk(&child, source, file_path, Some(&qn), lang, result);
+                        work.push_back((child, Some(qn.clone())));
                     }
                 }
                 return;
@@ -526,7 +538,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -536,7 +548,7 @@ fn walk(
         "function_definition" if lang.is_c_family() => {
             let name = extract_c_function_name(node, source);
             if let Some(name) = name {
-                let qn = make_qualified_name(file_path, &name, parent_symbol);
+                let qn = make_qualified_name(file_path, &name, parent_symbol.as_deref());
                 result.symbols.push(SymbolDef {
                     kind: SymbolKind::Function,
                     name: name.clone(),
@@ -554,7 +566,7 @@ fn walk(
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "compound_statement" {
-                        walk(&child, source, file_path, Some(&qn), lang, result);
+                        work.push_back((child, Some(qn.clone())));
                     }
                 }
                 return;
@@ -567,7 +579,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -575,7 +587,7 @@ fn walk(
         }
         // ── C++ only: class specifier ──
         "class_specifier" if lang == Language::Cpp => {
-            if let Some(sym) = extract_class(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_class(node, source, file_path, parent_symbol.as_deref()) {
                 let qn = sym.qualified_name.clone();
                 result.symbols.push(sym);
                 // class_specifier body is field_declaration_list
@@ -584,7 +596,7 @@ fn walk(
                     if child.kind() == "field_declaration_list" {
                         let mut fc = child.walk();
                         for member in child.children(&mut fc) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -596,7 +608,7 @@ fn walk(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "declaration_list" || child.kind() == "compound_statement" {
-                    walk(&child, source, file_path, parent_symbol, lang, result);
+                    work.push_back((child, parent_symbol.clone()));
                 }
             }
             return;
@@ -608,7 +620,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -617,7 +629,7 @@ fn walk(
         // ── C/C++: struct/union specifier → Class ──
         "struct_specifier" | "union_specifier" if lang.is_c_family() => {
             if let Some(name) = get_child_text(node, "name", source) {
-                let qn = make_qualified_name(file_path, &name, parent_symbol);
+                let qn = make_qualified_name(file_path, &name, parent_symbol.as_deref());
                 result.symbols.push(SymbolDef {
                     kind: SymbolKind::Class,
                     name: name.clone(),
@@ -638,7 +650,7 @@ fn walk(
                     if child.kind() == "field_declaration_list" {
                         let mut fc = child.walk();
                         for member in child.children(&mut fc) {
-                            walk_method(&member, source, file_path, &qn, lang, result);
+                            walk_method(&member, source, file_path, &qn, lang, result, work);
                         }
                     }
                 }
@@ -648,7 +660,7 @@ fn walk(
         // ── C/C++: enum specifier → Enum ──
         "enum_specifier" if lang.is_c_family() => {
             if let Some(name) = get_child_text(node, "name", source) {
-                let qn = make_qualified_name(file_path, &name, parent_symbol);
+                let qn = make_qualified_name(file_path, &name, parent_symbol.as_deref());
                 result.symbols.push(SymbolDef {
                     kind: SymbolKind::Enum,
                     name,
@@ -668,19 +680,19 @@ fn walk(
         }
         // ── TS-only: interface/enum/type_alias ──
         "interface_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_interface(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
         }
         "enum_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_enum(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
         }
         "type_alias_declaration" if lang.is_ts_family() => {
-            if let Some(sym) = extract_type_alias(node, source, file_path, parent_symbol) {
+            if let Some(sym) = extract_type_alias(node, source, file_path, parent_symbol.as_deref()) {
                 result.symbols.push(sym);
                 return;
             }
@@ -689,13 +701,13 @@ fn walk(
         "export_statement" if lang.is_ts_family() => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk(&child, source, file_path, parent_symbol, lang, result);
+                work.push_back((child, parent_symbol.clone()));
             }
             return;
         }
         // Variable declarations: `const foo = () => {}` or `const foo = function() {}`
         "lexical_declaration" | "variable_declaration" if lang.is_ts_family() => {
-            extract_variable(node, source, file_path, parent_symbol, lang, result);
+            extract_variable(node, source, file_path, parent_symbol.as_deref(), lang, result, work);
             return;
         }
         // ── TS/JS: call expressions ──
@@ -705,7 +717,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -718,7 +730,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -731,7 +743,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -744,7 +756,7 @@ fn walk(
                 result.calls.push(CallSite {
                     callee,
                     line: node.start_position().row + 1,
-                    caller_qualified: parent_symbol.map(|s| s.to_string()),
+                    caller_qualified: parent_symbol.clone(),
                     col: node.start_position().column,
                 });
             }
@@ -756,7 +768,7 @@ fn walk(
     // Recurse into children for any node type we didn't handle (or that fell through)
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk(&child, source, file_path, parent_symbol, lang, result);
+        work.push_back((child, parent_symbol.clone()));
     }
 }
 
@@ -790,20 +802,21 @@ fn extract_function(
 }
 
 /// Walk a class body member, extracting methods.
-fn walk_method(
-    node: &Node,
+fn walk_method<'t>(
+    node: &Node<'t>,
     source: &str,
     file_path: &str,
     class_qn: &str,
     lang: Language,
     result: &mut ExtractionResult,
+    work: &mut VecDeque<(Node<'t>, Option<String>)>,
 ) {
     // Python: decorated_definition wraps function_definition — recurse into it
     if lang == Language::Python && node.kind() == "decorated_definition" {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "function_definition" {
-                walk_method(&child, source, file_path, class_qn, lang, result);
+                walk_method(&child, source, file_path, class_qn, lang, result, work);
             }
         }
         return;
@@ -834,14 +847,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -873,14 +879,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "statement_block" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -912,14 +911,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -977,14 +969,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -1017,14 +1002,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "block" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -1052,14 +1030,7 @@ fn walk_method(
 
             // Walk the body field only — avoid walking parameters/name
             if let Some(body) = node.child_by_field_name("body") {
-                walk(
-                    &body,
-                    source,
-                    file_path,
-                    Some(&qualified_name),
-                    lang,
-                    result,
-                );
+                work.push_back((body, Some(qualified_name.clone())));
             }
         }
         return;
@@ -1089,14 +1060,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "compound_statement" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -1128,14 +1092,7 @@ fn walk_method(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "compound_statement" {
-                    walk(
-                        &child,
-                        source,
-                        file_path,
-                        Some(&qualified_name),
-                        lang,
-                        result,
-                    );
+                    work.push_back((child, Some(qualified_name.clone())));
                 }
             }
         }
@@ -1247,13 +1204,18 @@ fn extract_type_alias(
 }
 
 /// Extract variable declarations that are arrow functions or function expressions.
-fn extract_variable(
-    node: &Node,
+fn extract_variable<'t>(
+    node: &Node<'t>,
     source: &str,
     file_path: &str,
     parent: Option<&str>,
-    lang: Language,
+    // `lang` is part of the iterative-walk plumbing symmetry but isn't read
+    // by this helper (variable/arrow extraction is language-agnostic via the
+    // tree-sitter node kinds). Kept to preserve the caller-side signature
+    // shape; mark `_lang` to silence the unused-variable warning.
+    _lang: Language,
     result: &mut ExtractionResult,
+    work: &mut VecDeque<(Node<'t>, Option<String>)>,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -1273,17 +1235,10 @@ fn extract_variable(
                     let qualified_name = make_qualified_name(file_path, &name, parent);
                     let mut vc = val_child.walk();
                     for vc_child in val_child.children(&mut vc) {
-                        walk(
-                            &vc_child,
-                            source,
-                            file_path,
-                            Some(&qualified_name),
-                            lang,
-                            result,
-                        );
+                        work.push_back((vc_child, Some(qualified_name.clone())));
                     }
                 } else {
-                    walk(&val_child, source, file_path, parent, lang, result);
+                    work.push_back((val_child, parent.map(|s| s.to_string())));
                 }
             }
 
@@ -1458,8 +1413,10 @@ fn is_go_exported(name: &str) -> bool {
 }
 /// Count cyclomatic complexity: if, else if, for, while, switch case, &&, ||, ternary.
 fn count_complexity(node: &Node, source: &str) -> u32 {
-    fn count_node(node: &Node, source: &str) -> u32 {
-        let mut c = match node.kind() {
+    // Score one node's kind for branching complexity. Pure (no recursion); the
+    // iterative driver below walks the subtree with an explicit work stack.
+    fn score(node: &Node, source: &str) -> u32 {
+        match node.kind() {
             "if_statement" | "for_statement" | "for_in_statement" | "while_statement"
             | "do_statement" | "switch_case" | "ternary_expression" => 1,
             "elif_clause" | "conditional_expression" | "case_clause" => 1,
@@ -1497,14 +1454,27 @@ fn count_complexity(node: &Node, source: &str) -> u32 {
                 }
             }
             _ => 0,
-        };
+        }
+    }
+    // Iterative subtree scan — no native recursion. Critical for deeply-nested
+    // ASTs: a depth-5000 function body has a 5000-deep subtree, and recursive
+    // count_node would overflow the stack on the single outermost call.
+    let mut total: u32 = 0;
+    let mut stack: VecDeque<Node> = VecDeque::new();
+    {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            c += count_node(&child, source);
+            stack.push_back(child);
         }
-        c
     }
-    1 + count_node(node, source)
+    while let Some(n) = stack.pop_front() {
+        total = total.saturating_add(score(&n, source));
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push_back(child);
+        }
+    }
+    1 + total
 }
 
 /// Extract decorators (TypeScript decorators are `@decorator` syntax).
@@ -2018,5 +1988,46 @@ pub fn public_fn() {}
             .find(|s| s.name == "public_fn")
             .unwrap();
         assert!(public.is_exported, "pub fn should be is_exported=true");
+    }
+
+    /// Regression: deeply-nested ASTs must not overflow the stack.
+    /// Recursive `walk()` / `count_complexity()` use one stack frame per AST
+    /// level (~hundreds of bytes/frame). The default 8 MiB thread stack
+    /// overflows at a few hundred levels of nested TS functions. Iterative
+    /// extraction must index 1200-deep nesting without crashing.
+    /// Runs the extraction explicitly inside a DEFAULT-stack (8 MiB) thread so
+    /// the 256 MiB mitigation in `index_cmd` cannot mask a regression here.
+    /// 1200 is well past the ~600 recursive overflow point and fast in CI
+    /// (~2s) while still proving the iterative port. Anything deeper rapidly
+    /// inflates the work-stack VecDeque in RAM, ballooning runtime — this is a
+    /// crash-protection test, not a perf test.
+    #[test]
+    fn test_extract_deeply_nested_functions_no_stack_overflow() {
+        let depth = 1_200;
+        let mut src = String::with_capacity(depth * 30);
+        for _ in 0..depth {
+            src.push_str("function f() { ");
+        }
+        src.push_str("return 0; ");
+        for _ in 0..depth {
+            src.push_str("} ");
+        }
+
+        let handle = std::thread::Builder::new()
+            // Deliberately the DEFAULT stack — exercises the production
+            // watcher/server path, NOT the 256 MiB CLI mitigation.
+            .spawn(move || {
+                let n = extract(&src, Language::TypeScript, "depth.ts").unwrap();
+                assert_eq!(
+                    n.symbols.len(),
+                    depth,
+                    "every nested function should yield a symbol"
+                );
+                assert!(n.calls.is_empty(), "no call sites in this snippet");
+                n.symbols.len()
+            })
+            .expect("spawn depth-stress thread");
+        let got = handle.join().expect("depth-stress thread panicked");
+        assert_eq!(got, depth);
     }
 }
