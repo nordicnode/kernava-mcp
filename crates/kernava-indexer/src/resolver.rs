@@ -72,8 +72,21 @@ impl FunctionRegistry {
         }
     }
 
-    /// Register a symbol. Files are added in order; index is the position.
+    /// Register a symbol. Idempotent: re-registering a qualified name that's
+    /// already in the registry overwrites the existing entry in place and does
+    /// NOT append a duplicate to `by_simple`. This keeps `try_global_unique`
+    /// (which gates on exactly one entry for a given simple name) correct under
+    /// re-index loops, and keeps `by_qualified` pointing at the freshest
+    /// definition. Avoids the per-run unbounded growth that would otherwise
+    /// happen when seeding the registry from the store in `index_full_with_config`.
+    /// SAFETY: when `qualified_name` already exists, the simple `name` is also
+    /// unchanged (the qualified name is `{file_path}.{name}`), so `by_simple`
+    /// needs no update.
     pub fn register(&mut self, sym: SymbolDef) {
+        if let Some(&existing_idx) = self.by_qualified.get(&sym.qualified_name) {
+            self.symbols[existing_idx] = sym; // in-place overwrite; idx unchanged
+            return;
+        }
         let idx = self.symbols.len();
         self.by_qualified.insert(sym.qualified_name.clone(), idx);
         self.by_simple

@@ -182,18 +182,35 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
 }
 
 /// Index a project from CLI.
+/// Runs on a dedicated thread with a 256 MiB stack — C/C++ preprocessor-heavy
+/// headers produce tree-sitter ASTs hundreds of levels deep, overflowing the
+/// default 8 MiB main-thread stack during recursive `walk()` in extractor.
+/// ponytail: proper fix is converting walk() to an iterative work-stack.
+/// Upgrade path: VecDeque<Node> loop instead of recursion in extractor.rs.
 pub fn index_cmd(path: &str, db_path: &str) -> anyhow::Result<()> {
-    let mut store = Store::open(db_path)?;
     let root = PathBuf::from(path);
     let config = load_config(path)?;
-    let results = kernava_indexer::builder::index_full_with_config(&mut store, &root, &config)?;
-    let files = results.len();
-    let symbols: usize = results.iter().map(|r| r.symbols_inserted).sum();
-    let resolved: usize = results.iter().map(|r| r.calls_resolved).sum();
-    let unresolved: usize = results.iter().map(|r| r.calls_unresolved).sum();
-    println!(
-        "Indexed {files} files: {symbols} symbols, {resolved} resolved, {unresolved} unresolved."
-    );
+
+    let db_path = db_path.to_string();
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024) // 256 MiB
+        .spawn(move || -> anyhow::Result<()> {
+            let mut store = Store::open(&db_path)?;
+            let results = kernava_indexer::builder::index_full_with_config(
+                &mut store, &root, &config,
+            )?;
+            let files = results.len();
+            let symbols: usize = results.iter().map(|r| r.symbols_inserted).sum();
+            let resolved: usize = results.iter().map(|r| r.calls_resolved).sum();
+            let unresolved: usize = results.iter().map(|r| r.calls_unresolved).sum();
+            println!(
+                "Indexed {files} files: {symbols} symbols, {resolved} resolved, {unresolved} unresolved."
+            );
+            Ok(())
+        })?
+        .join()
+        .expect("index thread panicked")?;
+
     Ok(())
 }
 

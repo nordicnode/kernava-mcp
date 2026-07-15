@@ -43,6 +43,20 @@ pub fn index_file_with_config(
     file_path: &Path,
     config: &crate::config::IndexerConfig,
 ) -> Result<IndexFileResult> {
+    let mut registry = build_registry(store, &file_path.to_string_lossy())?;
+    index_file_inner(store, file_path, config, &mut registry)
+}
+
+/// Internal: index a file with a pre-built registry (avoids O(N²) rebuild).
+/// The registry is built once in `index_full_with_config` and passed `&mut`
+/// across the loop — each file's new symbols are registered before resolving
+/// calls, so cross-file resolution works without re-scanning the store.
+fn index_file_inner(
+    store: &mut Store,
+    file_path: &Path,
+    config: &crate::config::IndexerConfig,
+    registry: &mut resolver::FunctionRegistry,
+) -> Result<IndexFileResult> {
     // Size gate — check metadata before reading to avoid allocating a huge String.
     let metadata = std::fs::metadata(file_path)?;
     if metadata.len() > config.max_file_size as u64 {
@@ -63,8 +77,8 @@ pub fn index_file_with_config(
     // the file_path convention used in upsert_file and qualified_name.
     resolve_module_paths(&mut extraction.module_map, file_path);
 
-    // 2. Build function registry from existing nodes + new ones
-    let mut registry = build_registry(store, &file_path.to_string_lossy())?;
+    // 2. Register new symbols into the shared registry.
+    // Registry is built once in index_full_with_config and reused — O(N) total.
     for sym in &extraction.symbols {
         registry.register(sym.clone());
     }
@@ -72,7 +86,7 @@ pub fn index_file_with_config(
     // 3. Resolve calls
     let resolved = resolver::resolve_calls(
         &extraction.calls,
-        &registry,
+        registry,
         &extraction.module_map,
         &file_path.to_string_lossy(),
     );
@@ -260,10 +274,17 @@ pub fn index_full_with_config(
     let import_deps = build_import_deps(&files);
     let order = topo_sort(&files, &import_deps);
     // 3. Index in topo order. Producers' nodes are committed before consumers.
-    // Skip files that fail (binary, encoding, parse) — don't abort the whole index.
+    // Seed the registry ONCE from the store so that:
+    //   - files skipped this run (oversized/unreadable/parse-error) keep their
+    //     symbols resolvable by later files (cross-file edges don't rot), and
+    //   - re-index runs on a warm DB don't lose already-persisted targets.
+    // O(1) store scan here vs the old O(N²) that called build_registry per file.
+    // `register` is idempotent, so re-registering this run's new symbols just
+    // overwrites the seeded entries with the fresh definitions.
+    let mut registry = build_registry(store, "")?;
     let mut results = Vec::new();
     for p in &order {
-        match index_file_with_config(store, p, config) {
+        match index_file_inner(store, p, config, &mut registry) {
             Ok(r) => results.push(r),
             Err(e) => {
                 warn!("skipping file {:?}: {e}", p);
@@ -746,6 +767,77 @@ mod tests {
             result.calls_resolved,
             result.calls_unresolved
         );
+    }
+
+    /// Regression: shared-registry must not lose symbols when a producer file
+    /// is skipped on a re-index (oversized), or cross-file edges from consumers
+    /// into that producer regress from resolved → NULL target.
+    #[test]
+    fn test_index_full_skipped_producer_keeps_resolved_edges_on_reindex() {
+        use crate::config::IndexerConfig;
+        use std::fs;
+
+        let dir = std::env::temp_dir().join("kernava_reindex_skip_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // lib.ts: exports greet; main.ts imports + calls greet.
+        fs::write(dir.join("lib.ts"), "export function greet() { return 1; }\n").unwrap();
+        fs::write(
+            dir.join("main.ts"),
+            "import { greet } from './lib';\nfunction main() { greet(); }\n",
+        )
+        .unwrap();
+
+        let mut store = Store::open_in_memory().unwrap();
+
+        // Run 1: both files index. main.ts → lib.greet edge resolves.
+        {
+            let config = IndexerConfig {
+                max_file_size: 1_048_576,
+                ignore: vec![],
+                follow_symlinks: false,
+            };
+            let r =
+                index_full_with_config(&mut store, &dir, &config).unwrap();
+            assert_eq!(r.len(), 2, "both files should index on run 1");
+            let edges = store.get_all_edges().unwrap();
+            let resolved = edges.iter().filter(|e| e.target_id.is_some()).count();
+            assert!(
+                resolved >= 1,
+                "run 1: greet call should resolve; got {resolved} resolved edges"
+            );
+        }
+
+        // Grow lib.ts past max_file_size so it gets skipped on run 2.
+        // main.ts unchanged → its edge into lib.greet must STAY resolved.
+        let big = "x".repeat(2048);
+        fs::write(dir.join("lib.ts"), format!("export function greet() {{ return 1; }}\n// {big}")).unwrap();
+        {
+            let config = IndexerConfig {
+                max_file_size: 1024, // lib.ts now exceeds → skipped
+                ignore: vec![],
+                follow_symlinks: false,
+            };
+            let r =
+                index_full_with_config(&mut store, &dir, &config).unwrap();
+            // lib.ts is skipped; main.ts re-indexed.
+            assert_eq!(r.len(), 1, "lib.ts should be skipped on run 2");
+
+            let edges = store.get_all_edges().unwrap();
+            let resolved = edges.iter().filter(|e| e.target_id.is_some()).count();
+            // main.ts's edge to lib.greet must still resolve because lib.greet
+            // is still in the store. If the shared-registry regression is present,
+            // resolve_calls returns None for greet (not in the per-run registry),
+            // and the edge gets a NULL target.
+            assert!(
+                resolved >= 1,
+                "run 2: greet call should stay resolved since lib.greet is still \
+                 in the store; got {resolved} resolved edges"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
