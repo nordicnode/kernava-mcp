@@ -87,8 +87,17 @@ fn spawn_watcher(
     Ok(handle)
 }
 
-/// Start the MCP server on the given port with the given DB path and project root.
-pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow::Result<()> {
+/// Build shared AppState (store + graph + config) and spawn the file-watcher
+/// thread. Used by both the streamable-HTTP and stdio server transports so the
+/// in-RAM cache + live file watching work identically either way.
+///
+/// Returns `(state, cancellation_token, watcher_handle)`. If the watcher fails
+/// to start the server runs without live file watching (non-fatal) and the
+/// handle is `None`; the caller still owns `ct` and should cancel it on shutdown.
+fn build_state_and_watcher(
+    db_path: &str,
+    project_root: &str,
+) -> anyhow::Result<(Arc<AppState>, CancellationToken, Option<JoinHandle<()>>)> {
     info!("Opening database at {db_path}");
     let store = Store::open(db_path)?;
 
@@ -127,6 +136,15 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
             None
         }
     };
+
+    Ok((state, ct, watcher_handle))
+}
+
+/// Start the MCP server (streamable HTTP) on the given port with the given DB
+/// path and project root.
+pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow::Result<()> {
+    let (state, ct, watcher_handle) = build_state_and_watcher(db_path, project_root)?;
+
     let service = StreamableHttpService::new(
         move || Ok(KernavaHandler::new(state.clone())),
         LocalSessionManager::default().into(),
@@ -177,6 +195,45 @@ pub async fn serve_async(port: u16, db_path: &str, project_root: &str) -> anyhow
         })
         .await?;
 
+    info!("Shutdown complete.");
+    Ok(())
+}
+
+/// Start the MCP server over stdio (stdin/stdout JSON-RPC). This is the
+/// transport MCP clients like jcode/Claude Code use when spawning the server
+/// as a child process — no HTTP listener, no port. The server reads
+/// JSON-RPC requests from stdin and writes responses to stdout; logging goes
+/// to stderr so it doesn't corrupt the protocol stream.
+///
+/// Shuts down when the client closes stdin (EOF) or sends a transport
+/// cancellation, then joins the watcher thread.
+pub async fn serve_stdio(db_path: &str, project_root: &str) -> anyhow::Result<()> {
+    let (state, ct, watcher_handle) = build_state_and_watcher(db_path, project_root)?;
+
+    info!(
+        "Kernava MCP server starting in stdio mode (db={}, project={})",
+        db_path, project_root
+    );
+
+    let handler = KernavaHandler::new(state);
+    // (tokio::io::stdin(), tokio::io::stdout()) is the canonical rmcp stdio
+    // transport — jcode spawns this binary as a child and talks JSON-RPC over
+    // the child's stdin/stdout. serve_server_with_ct performs the MCP
+    // initialize handshake and returns once the transport closes (stdin EOF or
+    // cancellation token fire).
+    let transport = (tokio::io::stdin(), tokio::io::stdout());
+    let running = rmcp::service::serve_server_with_ct(handler, transport, ct.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("MCP stdio initialize failed: {e}"))?;
+
+    // Block until the client disconnects (stdin closes) or the cancellation
+    // token fires. Either way the service task exits and waiting() resolves.
+    let _ = running.waiting().await;
+
+    ct.cancel();
+    if let Some(h) = watcher_handle {
+        let _ = h.join();
+    }
     info!("Shutdown complete.");
     Ok(())
 }

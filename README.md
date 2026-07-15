@@ -18,7 +18,7 @@ Source files → tree-sitter (11 languages) → symbols + calls + imports
                            MCP server (streamable HTTP via rmcp)
 ```
 
-- **Transport**: Streamable HTTP via [`rmcp`](https://crates.io/crates/rmcp). Long-lived process — the graph stays warm between MCP sessions. No stdio cold-start penalty.
+- **Transport**: Streamable HTTP **or** stdio, both via [`rmcp`](https://crates.io/crates/rmcp). For the HTTP mode the server is a long-lived process — the graph stays warm between MCP sessions, no cold-start penalty. For stdio the server is spawned as a child process by the MCP client (the mode jcode/Claude Code use when they launch the binary themselves) and shuts down on stdin EOF.
 - **Storage**: SQLite-WAL with FTS5. Same architecture proven by [CBM](https://github.com/DeusData/codebase-memory-mcp) at 28M LOC with sub-ms queries. Large-repo soak test pending (§6.5).
 - **Graph**: Single global `GraphCache` (DashMap-backed) shared across all MCP sessions. Lock-free reads.
 - **Parsing**: tree-sitter, 11 languages. Incremental re-indexing on file watch with content-hash dedup.
@@ -68,8 +68,11 @@ Kotlin is deferred (tree-sitter-kotlin requires tree-sitter <0.23, incompatible 
 # Build
 cargo build --release
 
-# Start the MCP server (indexes your project, listens on port 8080)
+# Start the MCP server over streamable HTTP (indexes your project, listens on port 8080)
 ./target/release/kernava serve --port 8080 --project-root /path/to/your/project
+
+# Or run it over stdio (the mode MCP clients that spawn the binary as a child process use)
+./target/release/kernava serve --transport stdio --project-root /path/to/your/project
 
 # Or index from CLI without running the server
 ./target/release/kernava index --path /path/to/your/project
@@ -79,7 +82,8 @@ cargo build --release
 ./target/release/kernava query search_symbols --args '{"query":"handleRequest"}' --db-path kernava.db
 ```
 
-Then configure your MCP client (below) to connect to `http://localhost:8080/mcp`.
+For HTTP, configure your MCP client (below) to connect to `http://localhost:8080/mcp`.
+For stdio, configure your MCP client to spawn the binary as a child process (see "stdio" config below).
 
 ## MCP Client Configuration
 
@@ -121,9 +125,26 @@ Then configure your MCP client (below) to connect to `http://localhost:8080/mcp`
 }
 ```
 
-### Generic MCP Client
+### Generic MCP Client (streamable HTTP)
 
 Endpoint: `http://localhost:8080/mcp` (streamable HTTP, POST).
+
+### stdio (jcode, Claude Code, any client that spawns the binary)
+
+Some clients (jcode, Claude Code) launch the MCP server as a child process and talk JSON-RPC over its stdin/stdout rather than dialling an HTTP URL. For those, set `--transport stdio`. Logs are written to stderr so they don't corrupt the JSON-RPC stream on stdout.
+
+```json
+{
+  "mcpServers": {
+    "kernava": {
+      "command": "/path/to/kernava",
+      "args": ["serve", "--transport", "stdio", "--project-root", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+Optional: pass `--db-path /path/to/kernava.db` to persist the index between runs (defaults to `kernava.db` in the server's CWD).
 
 ## Configuration
 

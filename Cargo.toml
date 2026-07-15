@@ -9,7 +9,7 @@ resolver = "2"
 
 [workspace.dependencies]
 # MCP
-rmcp = { version = "2", features = ["server", "transport-streamable-http-server", "schemars"] }
+rmcp = { version = "2", features = ["server", "transport-streamable-http-server", "transport-io", "schemars"] }
 # HTTP server (for streamable HTTP transport mounting)
 axum = "0.7"
 
