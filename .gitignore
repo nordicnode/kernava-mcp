@@ -1,0 +1,17 @@
+/target
+**/target/
+/**/*.rs.bk
+# Cargo.lock — committed for binary crates (reproducible builds)
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal dev docs (not for public repo)
+DEVELOPMENT_PLAN.md
