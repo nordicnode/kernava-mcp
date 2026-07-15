@@ -357,7 +357,13 @@ pub fn index_incremental(
 
     let mut results = Vec::new();
     for p in &sorted {
-        results.push(index_file(store, p)?);
+        match index_file(store, p) {
+            Ok(r) => results.push(r),
+            Err(e) => {
+                warn!("skipping file {:?}: {e}", p);
+                continue;
+            }
+        }
     }
     Ok(results)
 }
