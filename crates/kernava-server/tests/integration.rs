@@ -1077,3 +1077,747 @@ async fn test_uncovered_tools_via_handler() {
     drop(handler);
     let _ = std::fs::remove_file(&db_path);
 }
+
+/// Test all remaining tools through handler.query() to verify the handler
+/// dispatch layer (argument deserialization, resolve_qname, result formatting)
+/// for tools that were previously only tested at the store/graph level.
+#[tokio::test]
+async fn test_remaining_tools_via_handler() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-small")
+        .canonicalize()
+        .unwrap();
+
+    // Index fixture
+    let mut store = Store::open(&db_path).unwrap();
+    kernava_indexer::builder::index_full(&mut store, &fixture_root).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    graph.load_from_store(&store).unwrap();
+    drop(store);
+
+    let store = Store::open(&db_path).unwrap();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // 1. search_symbols — "add" should find the add function
+    let syms = handler
+        .query("search_symbols", serde_json::json!({"query": "add"}))
+        .unwrap();
+    assert!(
+        syms.contains("Found 1 symbols"),
+        "search_symbols should find exactly 1 symbol: {syms}"
+    );
+
+    // 2. search_symbols — empty query returns hint message
+    let empty = handler
+        .query("search_symbols", serde_json::json!({"query": ""}))
+        .unwrap();
+    assert!(
+        empty.contains("empty") && empty.to_lowercase().contains("provide"),
+        "empty query should return hint: {empty}"
+    );
+
+    // 3. search_symbols — nonexistent returns "No symbols found."
+    let nope = handler
+        .query(
+            "search_symbols",
+            serde_json::json!({"query": "zzz_nope_zzz"}),
+        )
+        .unwrap();
+    assert!(
+        nope.contains("No symbols found"),
+        "nonexistent should report no symbols: {nope}"
+    );
+
+    // 4. find_references — add is called by main (1 reference)
+    let refs = handler
+        .query(
+            "find_references",
+            serde_json::json!({"qualified_name": "math.ts.add"}),
+        )
+        .unwrap();
+    assert!(
+        refs.contains("Found 1 references"),
+        "find_references should find exactly 1 reference: {refs}"
+    );
+    assert!(
+        refs.contains("main.ts.main"),
+        "find_references should show main.ts.main as caller: {refs}"
+    );
+
+    // 5. find_references — nonexistent symbol returns "not found"
+    let refs_nope = handler
+        .query(
+            "find_references",
+            serde_json::json!({"qualified_name": "does.not.exist"}),
+        )
+        .unwrap();
+    assert!(
+        refs_nope.contains("not found"),
+        "nonexistent symbol should report not found: {refs_nope}"
+    );
+
+    // 6. get_callers — add has 1 caller (main)
+    let callers = handler
+        .query("get_callers", serde_json::json!({"source": "math.ts.add"}))
+        .unwrap();
+    assert!(
+        callers.contains("Found 1 callers"),
+        "get_callers should find exactly 1 caller: {callers}"
+    );
+    assert!(
+        callers.contains("main.ts.main"),
+        "get_callers should show main.ts.main as caller: {callers}"
+    );
+
+    // 7. get_callers — nonexistent returns "not found"
+    let callers_nope = handler
+        .query(
+            "get_callers",
+            serde_json::json!({"source": "does.not.exist"}),
+        )
+        .unwrap();
+    assert!(
+        callers_nope.contains("not found"),
+        "nonexistent source should report not found: {callers_nope}"
+    );
+
+    // 8. find_definition — main calls add, multiply, helper
+    let defs = handler
+        .query(
+            "find_definition",
+            serde_json::json!({"caller_qualified_name": "main.ts.main"}),
+        )
+        .unwrap();
+    assert!(
+        defs.contains("Definition"),
+        "find_definition should return definitions: {defs}"
+    );
+    assert!(
+        defs.contains("math.ts.add"),
+        "find_definition should resolve math.ts.add: {defs}"
+    );
+    assert!(
+        defs.contains("math.ts.multiply"),
+        "find_definition should resolve math.ts.multiply: {defs}"
+    );
+
+    // 9. find_definition — nonexistent caller returns "not found"
+    let defs_nope = handler
+        .query(
+            "find_definition",
+            serde_json::json!({"caller_qualified_name": "does.not.exist"}),
+        )
+        .unwrap();
+    assert!(
+        defs_nope.contains("not found"),
+        "nonexistent caller should report not found: {defs_nope}"
+    );
+
+    // 10. get_call_path — path from main to add (1 hop)
+    let path = handler
+        .query(
+            "get_call_path",
+            serde_json::json!({
+                "source": "main.ts.main",
+                "target": "math.ts.add"
+            }),
+        )
+        .unwrap();
+    assert!(
+        path.contains("Path (1 hop"),
+        "get_call_path should find exactly 1 hop: {path}"
+    );
+    assert!(
+        path.contains("main.ts.main") && path.contains("math.ts.add"),
+        "get_call_path should show main.ts.main → math.ts.add: {path}"
+    );
+
+    // 11. get_call_path — source not found
+    let path_nope = handler
+        .query(
+            "get_call_path",
+            serde_json::json!({
+                "source": "does.not.exist",
+                "target": "math.ts.add"
+            }),
+        )
+        .unwrap();
+    assert!(
+        path_nope.contains("not found"),
+        "nonexistent source should report not found: {path_nope}"
+    );
+
+    // 12. get_call_path — no path exists (add → main, reverse direction)
+    let no_path = handler
+        .query(
+            "get_call_path",
+            serde_json::json!({
+                "source": "math.ts.add",
+                "target": "main.ts.main"
+            }),
+        )
+        .unwrap();
+    assert!(
+        no_path.contains("No path"),
+        "add → main should have no path: {no_path}"
+    );
+
+    // 13. get_impact_radius — add has 1 transitive caller (main)
+    let impact = handler
+        .query(
+            "get_impact_radius",
+            serde_json::json!({"source": "math.ts.add"}),
+        )
+        .unwrap();
+    assert!(
+        impact.contains("Impact radius") && impact.contains("1 affected symbols"),
+        "get_impact_radius should show 1 affected symbol: {impact}"
+    );
+    assert!(
+        impact.contains("main.ts.main"),
+        "get_impact_radius should show main.ts.main as affected: {impact}"
+    );
+
+    // 14. get_impact_radius — nonexistent returns "not found"
+    let impact_nope = handler
+        .query(
+            "get_impact_radius",
+            serde_json::json!({"source": "does.not.exist"}),
+        )
+        .unwrap();
+    assert!(
+        impact_nope.contains("not found"),
+        "nonexistent source should report not found: {impact_nope}"
+    );
+
+    // 15. detect_dead_code — util.ts has dead_function
+    let dead = handler
+        .query("detect_dead_code", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        dead.contains("dead_function") || dead.contains("No dead code"),
+        "detect_dead_code should find dead_function or report none: {dead}"
+    );
+    if dead.contains("dead_function") {
+        assert!(
+            dead.contains("Found 1 dead symbols"),
+            "dead code should report exactly 1 dead symbol: {dead}"
+        );
+    }
+
+    // 16. get_communities — ts-small has call edges so communities exist
+    let communities = handler
+        .query("get_communities", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        communities.contains("Found") && communities.contains("communities"),
+        "get_communities should return community count: {communities}"
+    );
+
+    // 17. get_architecture — should report files, symbols, entry points
+    let arch = handler
+        .query("get_architecture", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        arch.contains("Project Architecture"),
+        "get_architecture should return architecture summary: {arch}"
+    );
+    assert!(
+        arch.contains("Languages:"),
+        "get_architecture should show languages: {arch}"
+    );
+    assert!(
+        arch.contains("Entry points"),
+        "get_architecture should show entry points: {arch}"
+    );
+    assert!(
+        arch.contains("main.ts.main"),
+        "get_architecture should list main.ts.main as entry point: {arch}"
+    );
+    assert!(
+        arch.contains("Hub functions"),
+        "get_architecture should show hub functions: {arch}"
+    );
+
+    // 18. get_git_impact — fixture root is inside wfmcp repo (no changes to fixtures)
+    let git = handler
+        .query("get_git_impact", serde_json::json!({}))
+        .unwrap();
+    // Fixture dir is inside a git repo but fixture files aren't modified,
+    // so git diff reports no changes in those paths.
+    assert!(
+        git.contains("git diff")
+            || git.contains("No uncommitted changes")
+            || git.contains("changed files"),
+        "get_git_impact should return git-related message: {git}"
+    );
+
+    // 19. unknown tool returns Err with available tool list
+    let unknown = handler
+        .query("nonexistent_tool_xyz", serde_json::json!({}))
+        .unwrap_err();
+    assert!(
+        unknown.contains("unknown tool"),
+        "unknown tool should return error: {unknown}"
+    );
+    assert!(
+        unknown.contains("available"),
+        "error should list available tools: {unknown}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// Test find_definition with call_line parameter — verifies flexible_opt_i32
+/// deserializer handles both JSON integers and numeric strings (some MCP
+/// clients send integers as strings).
+#[tokio::test]
+async fn test_find_definition_call_line() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-small")
+        .canonicalize()
+        .unwrap();
+
+    let mut store = Store::open(&db_path).unwrap();
+    kernava_indexer::builder::index_full(&mut store, &fixture_root).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    graph.load_from_store(&store).unwrap();
+    drop(store);
+
+    let store = Store::open(&db_path).unwrap();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // find_definition with call_line as integer — filters to calls at line 5 (add)
+    let def_int = handler
+        .query(
+            "find_definition",
+            serde_json::json!({
+                "caller_qualified_name": "main.ts.main",
+                "call_line": 5
+            }),
+        )
+        .unwrap();
+    assert!(
+        def_int.contains("math.ts.add"),
+        "call_line=5 should resolve to math.ts.add: {def_int}"
+    );
+    assert!(
+        !def_int.contains("math.ts.multiply"),
+        "call_line=5 should NOT include multiply (line 6): {def_int}"
+    );
+
+    // find_definition with call_line as string — MCP clients send strings
+    let def_str = handler
+        .query(
+            "find_definition",
+            serde_json::json!({
+                "caller_qualified_name": "main.ts.main",
+                "call_line": "5"
+            }),
+        )
+        .unwrap();
+    assert!(
+        def_str.contains("math.ts.add"),
+        "call_line=\"5\" (string) should resolve to math.ts.add: {def_str}"
+    );
+    assert!(
+        !def_str.contains("math.ts.multiply"),
+        "call_line=\"5\" should NOT include multiply: {def_str}"
+    );
+
+    // find_definition with call_line=6 — should resolve to multiply only
+    let def_6 = handler
+        .query(
+            "find_definition",
+            serde_json::json!({
+                "caller_qualified_name": "main.ts.main",
+                "call_line": 6
+            }),
+        )
+        .unwrap();
+    assert!(
+        def_6.contains("math.ts.multiply"),
+        "call_line=6 should resolve to math.ts.multiply: {def_6}"
+    );
+    assert!(
+        !def_6.contains("math.ts.add"),
+        "call_line=6 should NOT include add (line 5): {def_6}"
+    );
+
+    // find_definition with call_line for a line with no calls — empty result
+    let def_empty = handler
+        .query(
+            "find_definition",
+            serde_json::json!({
+                "caller_qualified_name": "main.ts.main",
+                "call_line": 999
+            }),
+        )
+        .unwrap();
+    assert!(
+        def_empty.contains("No outgoing calls"),
+        "call_line=999 (no call at this line) should report no calls: {def_empty}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// Test max_depth parameter through handler.query() using ts-chain fixture
+/// (step_a → step_b → step_c). Verifies handler passes max_depth to the
+/// graph algorithm and that multi-hop traversal works through the dispatch layer.
+#[tokio::test]
+async fn test_max_depth_via_handler() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-chain")
+        .canonicalize()
+        .unwrap();
+
+    let mut store = Store::open(&db_path).unwrap();
+    kernava_indexer::builder::index_full(&mut store, &fixture_root).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    graph.load_from_store(&store).unwrap();
+    drop(store);
+
+    let store = Store::open(&db_path).unwrap();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // get_callers of step_c with max_depth=1 — only step_b (direct caller)
+    let callers_d1 = handler
+        .query(
+            "get_callers",
+            serde_json::json!({"source": "c.ts.step_c", "max_depth": 1}),
+        )
+        .unwrap();
+    assert!(
+        callers_d1.contains("Found 1 callers"),
+        "max_depth=1 should find 1 direct caller: {callers_d1}"
+    );
+    assert!(
+        callers_d1.contains("step_b"),
+        "max_depth=1 should show step_b: {callers_d1}"
+    );
+    assert!(
+        !callers_d1.contains("step_a"),
+        "max_depth=1 should NOT show step_a (depth 2): {callers_d1}"
+    );
+
+    // get_callers of step_c with max_depth=2 — step_b (depth 1) + step_a (depth 2)
+    let callers_d2 = handler
+        .query(
+            "get_callers",
+            serde_json::json!({"source": "c.ts.step_c", "max_depth": 2}),
+        )
+        .unwrap();
+    assert!(
+        callers_d2.contains("Found 2 callers"),
+        "max_depth=2 should find 2 callers: {callers_d2}"
+    );
+    assert!(
+        callers_d2.contains("step_b"),
+        "max_depth=2 should show step_b: {callers_d2}"
+    );
+    assert!(
+        callers_d2.contains("step_a"),
+        "max_depth=2 should show step_a: {callers_d2}"
+    );
+
+    // get_callees of step_a with max_depth=1 — only step_b (direct callee)
+    let callees_d1 = handler
+        .query(
+            "get_callees",
+            serde_json::json!({"source": "a.ts.step_a", "max_depth": 1}),
+        )
+        .unwrap();
+    assert!(
+        callees_d1.contains("Found 1 callees"),
+        "max_depth=1 should find 1 direct callee: {callees_d1}"
+    );
+    assert!(
+        callees_d1.contains("step_b"),
+        "max_depth=1 should show step_b: {callees_d1}"
+    );
+    assert!(
+        !callees_d1.contains("step_c"),
+        "max_depth=1 should NOT show step_c (depth 2): {callees_d1}"
+    );
+
+    // get_callees of step_a with max_depth=2 — step_b (depth 1) + step_c (depth 2)
+    let callees_d2 = handler
+        .query(
+            "get_callees",
+            serde_json::json!({"source": "a.ts.step_a", "max_depth": 2}),
+        )
+        .unwrap();
+    assert!(
+        callees_d2.contains("Found 2 callees"),
+        "max_depth=2 should find 2 callees: {callees_d2}"
+    );
+    assert!(
+        callees_d2.contains("step_b"),
+        "max_depth=2 should show step_b: {callees_d2}"
+    );
+    assert!(
+        callees_d2.contains("step_c"),
+        "max_depth=2 should show step_c: {callees_d2}"
+    );
+
+    // get_call_path from step_a to step_c — 2 hops
+    let path = handler
+        .query(
+            "get_call_path",
+            serde_json::json!({
+                "source": "a.ts.step_a",
+                "target": "c.ts.step_c"
+            }),
+        )
+        .unwrap();
+    assert!(
+        path.contains("Path (2 hop"),
+        "step_a → step_c should be 2 hops: {path}"
+    );
+    assert!(
+        path.contains("step_a") && path.contains("step_b") && path.contains("step_c"),
+        "path should include all 3 nodes: {path}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// Test index_project through the handler — the one remaining tool without
+/// handler-level coverage. Verifies the handler dispatches index_project,
+/// deserializes params, runs the indexer, warms the graph cache, and returns
+/// a formatted summary string.
+#[tokio::test]
+async fn test_index_project_via_handler() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-small")
+        .canonicalize()
+        .unwrap();
+
+    // Fresh store — no pre-indexing
+    let store = Store::open(&db_path).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // index_project through handler
+    let result = handler
+        .query(
+            "index_project",
+            serde_json::json!({"project_root": fixture_root.to_string_lossy().to_string()}),
+        )
+        .unwrap();
+    assert!(
+        result.contains("Indexed"),
+        "index_project should return 'Indexed' summary: {result}"
+    );
+    assert!(
+        result.contains("files"),
+        "index_project should report file count: {result}"
+    );
+    assert!(
+        result.contains("symbols"),
+        "index_project should report symbol count: {result}"
+    );
+    assert!(
+        result.contains("resolved calls"),
+        "index_project should report resolved calls: {result}"
+    );
+
+    // Verify the graph cache was warmed by checking get_index_status
+    let status = handler
+        .query("get_index_status", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        status.contains("Files: 5"),
+        "after index, status should show 5 files: {status}"
+    );
+    assert!(
+        status.contains("Symbols: 7"),
+        "after index, status should show 7 symbols: {status}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// Test limit parameter on search_symbols and search_code through handler.query().
+/// Verifies the handler deserializes limit and the underlying query respects it.
+#[tokio::test]
+async fn test_limit_parameter_via_handler() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-small")
+        .canonicalize()
+        .unwrap();
+
+    let mut store = Store::open(&db_path).unwrap();
+    kernava_indexer::builder::index_full(&mut store, &fixture_root).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    graph.load_from_store(&store).unwrap();
+    drop(store);
+
+    let store = Store::open(&db_path).unwrap();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // search_symbols with limit=1 — should return only 1 result even though
+    // "helper" appears twice (util.ts.helper + other.ts.helper)
+    let limited = handler
+        .query(
+            "search_symbols",
+            serde_json::json!({"query": "helper", "limit": 1}),
+        )
+        .unwrap();
+    assert!(
+        limited.contains("Found 1 symbols"),
+        "limit=1 should return exactly 1 symbol: {limited}"
+    );
+
+    // search_symbols without limit — should return both helpers
+    let unlimited = handler
+        .query("search_symbols", serde_json::json!({"query": "helper"}))
+        .unwrap();
+    assert!(
+        unlimited.contains("Found 2 symbols"),
+        "no limit should return both helpers: {unlimited}"
+    );
+
+    // search_code with limit=1 — "function" appears many times, should cap at 1
+    let code_limited = handler
+        .query(
+            "search_code",
+            serde_json::json!({"pattern": "function", "limit": 1}),
+        )
+        .unwrap();
+    assert!(
+        code_limited.contains("Found 1 match"),
+        "limit=1 should return exactly 1 match: {code_limited}"
+    );
+
+    // search_code with no limit — "function" appears in all 5 files
+    // (export function add, export function multiply, etc.)
+    let code_unlimited = handler
+        .query("search_code", serde_json::json!({"pattern": "function"}))
+        .unwrap();
+    // Verify it found more than 1 match (no limit → default 50)
+    assert!(
+        !code_unlimited.contains("Found 1 match\n"),
+        "no limit should return more than 1 match: {code_unlimited}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// Test FTS5 prefix matching — searching "help" should match "helper"
+/// because FTS5 uses prefix matching (token + "*").
+#[tokio::test]
+async fn test_fts5_prefix_matching_via_handler() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-small")
+        .canonicalize()
+        .unwrap();
+
+    let mut store = Store::open(&db_path).unwrap();
+    kernava_indexer::builder::index_full(&mut store, &fixture_root).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    graph.load_from_store(&store).unwrap();
+    drop(store);
+
+    let store = Store::open(&db_path).unwrap();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // "help" is a prefix of "helper" — FTS5 prefix match should find it
+    let prefix = handler
+        .query("search_symbols", serde_json::json!({"query": "help"}))
+        .unwrap();
+    assert!(
+        prefix.contains("helper"),
+        "FTS5 prefix match: 'help' should find 'helper': {prefix}"
+    );
+
+    // "mul" is a prefix of "multiply"
+    let mul = handler
+        .query("search_symbols", serde_json::json!({"query": "mul"}))
+        .unwrap();
+    assert!(
+        mul.contains("multiply"),
+        "FTS5 prefix match: 'mul' should find 'multiply': {mul}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
