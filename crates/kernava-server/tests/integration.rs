@@ -994,7 +994,7 @@ async fn test_uncovered_tools_via_handler() {
         )
         .unwrap();
     assert!(
-        main_only.contains("Found 1"),
+        main_only.contains("Found 1 match"),
         "main.ts glob should find exactly 1 match: {main_only}"
     );
 
@@ -1036,8 +1036,8 @@ async fn test_uncovered_tools_via_handler() {
         )
         .unwrap();
     assert!(
-        alt.contains("Found"),
-        "regex alternation should find matches: {alt}"
+        alt.contains("Found 17 match"),
+        "regex alternation 'return|const' should find 17 matches in ts-small: {alt}"
     );
 
     // 11. search_code — invalid regex returns Err (not panic)
@@ -1061,8 +1061,8 @@ async fn test_uncovered_tools_via_handler() {
         "get_symbol with relative qname should resolve: {sym_rel}"
     );
     assert!(
-        sym_rel.contains("Callers: 1"),
-        "add should have 1 caller (main): {sym_rel}"
+        sym_rel.contains("Callers: 1\n") || sym_rel.ends_with("Callers: 1"),
+        "add should have exactly 1 caller (main), not 10+: {sym_rel}"
     );
 
     // 13. get_callees — relative name resolves via resolve_qname

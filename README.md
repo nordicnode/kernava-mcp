@@ -62,6 +62,12 @@ Kotlin is deferred (tree-sitter-kotlin requires tree-sitter <0.23, incompatible 
 | `get_architecture` | Language distribution, module structure, entry points, hubs, communities |
 | `get_git_impact` | `git diff` → affected symbols → impact radius → risk classification |
 
+**Parameter conventions:**
+- `qualified_name` (used by `get_symbol`, `get_callers`, `get_callees`, `find_references`, `get_call_path`, `get_impact_radius`): Accepts either a full absolute path (`/home/user/project/src/math.ts.add`) or a relative path (`src/math.ts.add`). Relative paths are automatically resolved against the project root.
+- `file_path` (used by `get_file_outline`): Relative to project root (e.g., `src/math.ts`) or absolute.
+- `pattern` (used by `search_code`): Rust regex syntax. Invalid patterns return an error message, never panic.
+- `file_glob` (used by `search_code`): Suffix-matched against file paths (e.g., `*.ts`, `main.ts`, `**/*.rs`).
+
 ## Quick Start
 
 ```bash
