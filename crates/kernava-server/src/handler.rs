@@ -643,16 +643,23 @@ impl KernavaHandler {
         };
         // Lock dropped — disk I/O doesn't block other MCP tool calls
 
-        // ponytail: simple suffix match instead of full glob crate.
-        // Handles common patterns: "*.rs" → suffix ".rs", "**/*.rs" → suffix ".rs",
-        // "handler.rs" → exact filename. Strips common glob prefixes/prefix chars.
-        // Upgrade path: use the `glob` crate for full pattern matching when needed.
+        // ponytail: suffix match handling common glob patterns without a glob crate.
+        // Handles: "*.rs"→".rs", "**/*.rs"→".rs", "src/**/*.rs"→".rs",
+        // "cache.rs"→exact suffix, None→match all.
+        // Upgrade path: use `globset` crate for full recursive pattern matching.
         let file_filter = |path: &str| -> bool {
             match &params.file_glob {
                 Some(g) => {
-                    // Strip `**/` prefix (common in glob patterns like "**/*.rs")
-                    // then strip leading `*` chars (e.g. "*.rs" → ".rs")
-                    let filter = g.trim_start_matches("**/").trim_start_matches('*');
+                    // Strip leading **/ prefixes
+                    let stripped = g.trim_start_matches("**/");
+                    // If glob contains **/ after first segment (e.g. "src/**/*.rs"),
+                    // match the suffix part after **
+                    if let Some(idx) = stripped.find("**/") {
+                        let suffix = stripped[idx + 3..].trim_start_matches('*');
+                        return path.ends_with(suffix);
+                    }
+                    // Strip leading * chars (e.g. "*.rs" → ".rs")
+                    let filter = stripped.trim_start_matches('*');
                     path.ends_with(filter)
                 }
                 None => true,
