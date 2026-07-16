@@ -243,7 +243,7 @@ pub async fn serve_stdio(db_path: &str, project_root: &str) -> anyhow::Result<()
 /// headers produce tree-sitter ASTs hundreds of levels deep, overflowing the
 /// default 8 MiB main-thread stack during recursive `walk()` in extractor.
 /// ponytail: proper fix is converting walk() to an iterative work-stack.
-/// Upgrade path: VecDeque<Node> loop instead of recursion in extractor.rs.
+/// Upgrade path: VecDeque\<Node\> loop instead of recursion in extractor.rs.
 pub fn index_cmd(path: &str, db_path: &str) -> anyhow::Result<()> {
     let root = PathBuf::from(path);
     let config = load_config(path)?;
