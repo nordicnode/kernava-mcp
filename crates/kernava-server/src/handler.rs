@@ -882,13 +882,14 @@ impl KernavaHandler {
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|e| e.edge_type == "calls")
-            .map(|e| {
+            .filter_map(|e| {
+                let target_id = e.target_id?;
                 let file = e
                     .file_id
                     .and_then(|fid| store.get_file_path(fid).ok().flatten())
                     .unwrap_or_default();
                 let line = e.line.unwrap_or(0);
-                (e.target_id.unwrap_or(0), (file, line))
+                Some((target_id, (file, line)))
             })
             .collect();
 
@@ -1210,14 +1211,11 @@ impl KernavaHandler {
             .collect();
         dir_lines.sort();
 
-        // 3. Entry points: functions named "main", plus top-level exported functions
-        // and methods (functions/methods in files named lib.rs/main.rs/mod.rs at the
-        // crate root). Structs/enums/types are data declarations, not entry points.
+        // 3. Entry points: functions named "main", plus exported functions and
+        // methods. Structs/enums/types are data declarations, not entry points.
         let is_entry = |n: &kernava_store::NodeRow| {
             n.name == "main"
-                || (n.is_exported
-                    && (n.kind == "function" || n.kind == "method")
-                    && n.line_start <= 5) // top-level definitions start near file top
+                || (n.is_exported && (n.kind == "function" || n.kind == "method"))
         };
         let entry_count = all_nodes.iter().filter(|n| is_entry(n)).count();
         const MAX_ENTRY_DISPLAY: usize = 20;
