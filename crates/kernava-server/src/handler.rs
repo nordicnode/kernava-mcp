@@ -778,13 +778,13 @@ impl KernavaHandler {
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|e| e.edge_type == "calls")
-            .filter_map(|e| {
+            .map(|e| {
                 let file = e
                     .file_id
                     .and_then(|fid| store.get_file_path(fid).ok().flatten())
                     .unwrap_or_default();
                 let line = e.line.unwrap_or(0);
-                Some((e.source_id, (file, line)))
+                (e.source_id, (file, line))
             })
             .collect();
 
@@ -882,13 +882,13 @@ impl KernavaHandler {
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|e| e.edge_type == "calls")
-            .filter_map(|e| {
+            .map(|e| {
                 let file = e
                     .file_id
                     .and_then(|fid| store.get_file_path(fid).ok().flatten())
                     .unwrap_or_default();
                 let line = e.line.unwrap_or(0);
-                e.target_id.map(|tid| (tid, (file, line)))
+                (e.target_id.unwrap_or(0), (file, line))
             })
             .collect();
 
