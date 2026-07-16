@@ -844,3 +844,166 @@ async fn test_python_import_server() {
     drop(store);
     let _ = std::fs::remove_file(&db_path);
 }
+
+/// Test the 5 MCP tools that lacked formal integration test coverage:
+/// get_callees, get_file_outline, search_code, get_symbol, get_index_status.
+#[tokio::test]
+async fn test_uncovered_tools_via_handler() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/kernava_test_uncovered_{nanos}.db");
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/kernava-indexer/tests/fixtures/ts-small")
+        .canonicalize()
+        .unwrap();
+
+    // Index fixture
+    let mut store = Store::open(&db_path).unwrap();
+    kernava_indexer::builder::index_full(&mut store, &fixture_root).unwrap();
+    let graph = kernava_graph::GraphCache::new();
+    graph.load_from_store(&store).unwrap();
+    drop(store);
+
+    let store = Store::open(&db_path).unwrap();
+    let state = Arc::new(AppState {
+        store: Mutex::new(store),
+        graph,
+        project_root: fixture_root.clone(),
+        config: Arc::new(kernava_indexer::IndexerConfig::default()),
+    });
+    let handler = KernavaHandler::new(state);
+
+    // 1. get_index_status — should report 5 files, 7 symbols
+    let status = handler
+        .query("get_index_status", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        status.contains("Files: 5"),
+        "status should show 5 files: {status}"
+    );
+    assert!(
+        status.contains("Symbols: 7"),
+        "status should show 7 symbols: {status}"
+    );
+
+    // 2. get_symbol — fetch metadata for 'add'
+    let add_qname = format!("{}/math.ts.add", fixture_root.to_string_lossy());
+    let sym = handler
+        .query(
+            "get_symbol",
+            serde_json::json!({"qualified_name": add_qname}),
+        )
+        .unwrap();
+    assert!(
+        sym.contains("add"),
+        "get_symbol should contain 'add': {sym}"
+    );
+    assert!(
+        sym.contains("function"),
+        "get_symbol should show kind=function: {sym}"
+    );
+
+    // 3. get_symbol — nonexistent symbol returns graceful 'not found' message (Ok, not Err)
+    let not_found = handler
+        .query(
+            "get_symbol",
+            serde_json::json!({"qualified_name": "does.not.exist"}),
+        )
+        .unwrap();
+    assert!(
+        not_found.contains("not found"),
+        "nonexistent symbol should report 'not found': {not_found}"
+    );
+
+    // 4. get_file_outline — list symbols in math.ts
+    let outline = handler
+        .query(
+            "get_file_outline",
+            serde_json::json!({"file_path": "math.ts"}),
+        )
+        .unwrap();
+    assert!(
+        outline.contains("add"),
+        "outline should contain 'add': {outline}"
+    );
+    assert!(
+        outline.contains("multiply"),
+        "outline should contain 'multiply': {outline}"
+    );
+
+    // 5. get_file_outline — nonexistent file returns graceful message (Ok, not Err)
+    let not_found = handler
+        .query(
+            "get_file_outline",
+            serde_json::json!({"file_path": "nonexistent.ts"}),
+        )
+        .unwrap();
+    assert!(
+        not_found.contains("not in index") || not_found.contains("not found"),
+        "nonexistent file should report message: {not_found}"
+    );
+
+    // 6. search_code — regex search for "return" in .ts files
+    let code = handler
+        .query(
+            "search_code",
+            serde_json::json!({"pattern": "return", "file_glob": "*.ts"}),
+        )
+        .unwrap();
+    assert!(
+        code.contains("return"),
+        "search_code should find 'return': {code}"
+    );
+    assert!(
+        code.contains("math.ts") || code.contains("util.ts"),
+        "search_code should find file names: {code}"
+    );
+
+    // 7. search_code — no matches returns empty
+    let no_match = handler
+        .query(
+            "search_code",
+            serde_json::json!({"pattern": "zzz_no_match_zzz"}),
+        )
+        .unwrap();
+    assert!(
+        no_match.contains("No matches") || no_match.is_empty(),
+        "no match should be reported: {no_match}"
+    );
+
+    // 8. get_callees — main calls add, multiply, helper
+    let main_qname = format!("{}/main.ts.main", fixture_root.to_string_lossy());
+    let callees = handler
+        .query("get_callees", serde_json::json!({"source": main_qname}))
+        .unwrap();
+    assert!(
+        callees.contains("add"),
+        "main callees should include 'add': {callees}"
+    );
+    assert!(
+        callees.contains("multiply"),
+        "main callees should include 'multiply': {callees}"
+    );
+    assert!(
+        callees.contains("helper"),
+        "main callees should include 'helper': {callees}"
+    );
+
+    // 9. get_callees — nonexistent symbol returns graceful message (Ok, not Err)
+    let not_found = handler
+        .query(
+            "get_callees",
+            serde_json::json!({"source": "does.not.exist"}),
+        )
+        .unwrap();
+    assert!(
+        not_found.contains("not found"),
+        "nonexistent source should report 'not found': {not_found}"
+    );
+
+    drop(handler);
+    let _ = std::fs::remove_file(&db_path);
+}
