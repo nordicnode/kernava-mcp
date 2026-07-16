@@ -1231,7 +1231,10 @@ impl KernavaHandler {
         // methods. Structs/enums/types are data declarations, not entry points.
         let is_entry = |n: &kernava_store::NodeRow| {
             n.name == "main"
-                || (n.is_exported && (n.kind == "function" || n.kind == "method"))
+                || (n.is_exported
+                    && n.kind == "function"
+                    && !n.name.starts_with("test_")
+                    && !n.name.starts_with("bench_"))
         };
         let entry_count = all_nodes.iter().filter(|n| is_entry(n)).count();
         const MAX_ENTRY_DISPLAY: usize = 20;
