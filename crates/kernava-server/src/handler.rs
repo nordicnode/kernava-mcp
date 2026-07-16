@@ -1076,6 +1076,15 @@ impl KernavaHandler {
                     && !n.name.starts_with("test_")
                     && !n.name.ends_with("_test")
                     && !n.name.starts_with("Test")
+                    // PHP/Python dunder methods (__construct, __toString, __init__) are
+                    // invoked by the runtime via protocol hooks, not direct calls.
+                    && !n.name.starts_with("__")
+                    // Ruby constructors (initialize) invoked by Class.new at runtime.
+                    && n.name != "initialize"
+                    // Java/C++/C# constructors: method named same as enclosing class.
+                    // Qualified name format: "path/to/File.ext.ClassName.ClassName"
+                    // so a constructor has last two '.' segments identical.
+                    && !is_constructor(&n.qualified_name)
                     // Default trait impls (Default::default) are called via trait
                     // resolution which the call graph can't track. Skip to avoid
                     // false positives — these are always reachable at runtime.
@@ -1424,6 +1433,16 @@ pub fn classify_risk(total: usize) -> (&'static str, RiskLevel) {
     } else {
         ("[LOW]", RiskLevel::Low)
     }
+}
+
+/// Detect Java/C++/C# constructors: a method whose simple name matches its
+/// enclosing class. Qualified name format is "path/to/File.ext.ClassName.method",
+/// so a constructor has its last two '.'-separated segments identical.
+/// Invoked by the runtime via instantiation (`new ClassName()`), not direct calls,
+/// so they'd be false positives in the dead-code filter.
+fn is_constructor(qualified_name: &str) -> bool {
+    let parts: Vec<&str> = qualified_name.split('.').collect();
+    parts.len() >= 2 && parts[parts.len() - 1] == parts[parts.len() - 2]
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
