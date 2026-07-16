@@ -974,6 +974,30 @@ async fn test_uncovered_tools_via_handler() {
         "no match should be reported: {no_match}"
     );
 
+    // 7b. search_code — file_glob filters correctly (*.py finds nothing in TS-only fixture)
+    let py_empty = handler
+        .query(
+            "search_code",
+            serde_json::json!({"pattern": "function", "file_glob": "*.py"}),
+        )
+        .unwrap();
+    assert!(
+        py_empty.contains("No matches") || py_empty.is_empty(),
+        "*.py glob should find nothing in ts-only fixture: {py_empty}"
+    );
+
+    // 7c. search_code — file_glob with specific file name filters to 1 match
+    let main_only = handler
+        .query(
+            "search_code",
+            serde_json::json!({"pattern": "function", "file_glob": "main.ts"}),
+        )
+        .unwrap();
+    assert!(
+        main_only.contains("Found 1"),
+        "main.ts glob should find exactly 1 match: {main_only}"
+    );
+
     // 8. get_callees — main calls add, multiply, helper
     let main_qname = format!("{}/main.ts.main", fixture_root.to_string_lossy());
     let callees = handler
@@ -1002,6 +1026,52 @@ async fn test_uncovered_tools_via_handler() {
     assert!(
         not_found.contains("not found"),
         "nonexistent source should report 'not found': {not_found}"
+    );
+
+    // 10. search_code — regex alternation pattern
+    let alt = handler
+        .query(
+            "search_code",
+            serde_json::json!({"pattern": "return|const"}),
+        )
+        .unwrap();
+    assert!(
+        alt.contains("Found"),
+        "regex alternation should find matches: {alt}"
+    );
+
+    // 11. search_code — invalid regex returns Err (not panic)
+    let invalid = handler
+        .query("search_code", serde_json::json!({"pattern": "[invalid"}))
+        .unwrap_err();
+    assert!(
+        invalid.contains("regex") || invalid.contains("unclosed"),
+        "invalid regex should return regex error: {invalid}"
+    );
+
+    // 12. get_symbol — relative qualified name resolves via resolve_qname
+    let sym_rel = handler
+        .query(
+            "get_symbol",
+            serde_json::json!({"qualified_name": "math.ts.add"}),
+        )
+        .unwrap();
+    assert!(
+        sym_rel.contains("add") && sym_rel.contains("function"),
+        "get_symbol with relative qname should resolve: {sym_rel}"
+    );
+    assert!(
+        sym_rel.contains("Callers: 1"),
+        "add should have 1 caller (main): {sym_rel}"
+    );
+
+    // 13. get_callees — relative name resolves via resolve_qname
+    let callees_rel = handler
+        .query("get_callees", serde_json::json!({"source": "main.ts.main"}))
+        .unwrap();
+    assert!(
+        callees_rel.contains("add") && callees_rel.contains("multiply"),
+        "get_callees with relative qname should resolve: {callees_rel}"
     );
 
     drop(handler);
